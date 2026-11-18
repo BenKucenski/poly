@@ -2,7 +2,7 @@
 
 Counts how many wallets hold each side of Polymarket markets, on a schedule, and records how each market resolved. The goal is to compare the head-count majority with the winner at different times before the close, and to see where the crowd and the price disagree.
 
-Built on [QuickDRY9](https://github.com/BenKucenski/QuickDRY9). It uses Polymarket's public read APIs, which need no key:
+Built on [QuickDRY9](https://github.com/BenKucenski/QuickDRY9). Requests go through its `Curl` class with a 30-second timeout and `Curl::$throw_exceptions` on, so a hung or failed request is retried instead of ending the run. It uses Polymarket's public read APIs, which need no key:
 
 - **Gamma** (`gamma-api.polymarket.com/markets/keyset`): market list, prices, end dates, resolution.
 - **Data API v2** (`data-api.polymarket.com/v2/holders`): every holder of a market, by outcome, in cursor pages of up to 1000 per outcome.
