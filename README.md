@@ -57,6 +57,7 @@ Every row has its capture timestamp, so you can bucket by time later.
 ## Tables
 
 - `market`: one row per market (condition), with outcomes, tags, event, end date and, once settled, `winning_outcome_index`.
+- `market_tag`: one row per market per tag, indexed both ways, for filtering and grouping by tag. `market.tags` keeps the raw comma-separated list. The collector rewrites a market's rows every time it refreshes that market.
 - `snapshot`: one row per count. `captured_at`, `seconds_to_end`, `unique_holders`, `multi_side_holders` (wallets holding more than one outcome), volume and best bid/ask. `is_complete = 0` means the page cap or time budget cut the walk short. `error` is set if the walk failed.
 - `snapshot_outcome`: per outcome, `price`, `holder_count`, `total_shares`, wallets at 10/100/1,000/10,000+ shares, shares held by the top 10 wallets, and the largest wallet's holding.
 - `snapshot_holder`: per-wallet rows, only when `POLY_STORE_HOLDER_ROWS` is not 0.
@@ -90,6 +91,25 @@ WHERE crowd_disagrees_with_price = 1 AND winning_outcome_index IS NOT NULL AND i
 GROUP BY kind
 ORDER BY markets DESC;
 ```
+
+Accuracy by tag (a market with several tags counts under each):
+
+```sql
+SELECT t.tag,
+       COUNT(DISTINCT v.condition_id) AS markets,
+       AVG(v.headcount_correct)       AS headcount_acc,
+       AVG(v.price_correct)           AS price_acc
+FROM v_snapshot_vs_result v
+         JOIN market_tag t ON t.condition_id = v.condition_id
+WHERE v.winning_outcome_index IS NOT NULL AND v.is_complete = 1
+GROUP BY t.tag
+HAVING markets >= 20
+ORDER BY markets DESC;
+```
+
+## Upgrading an existing database
+
+- `sql/migrations/001_market_tag.sql` adds `market_tag` and fills it from `market.tags`. It is safe to run more than once.
 
 ## Things to keep in mind
 
