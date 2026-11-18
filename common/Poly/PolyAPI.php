@@ -3,16 +3,14 @@ declare(strict_types=1);
 
 namespace common\Poly;
 
-use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use QuickDRY\Connectors\Curl;
 use RuntimeException;
 
 /**
- * Read-only client for Polymarket's public APIs (no key needed).
- *
- * Uses Guzzle directly rather than QuickDRY\Connectors\Curl so every request
- * has a timeout: a request that hangs would otherwise hold the run until the
- * scheduler kills it.
+ * Read-only client for Polymarket's public APIs (no key needed), over
+ * QuickDRY's Curl with a timeout, so one hung request can't hold the run
+ * until the scheduler kills it.
  */
 class PolyAPI
 {
@@ -22,13 +20,19 @@ class PolyAPI
     public int $requests = 0;
     public int $errors = 0;
 
-    private ?Client $client = null;
+    private const array HEADERS = [
+        'Accept'     => 'application/json',
+        'User-Agent' => 'poly-headcount-collector/1.0',
+    ];
 
     /**
      * @param int $delay_ms pause before each request
      */
     public function __construct(private readonly int $delay_ms = 120)
     {
+        Curl::$timeout = 30;
+        Curl::$connect_timeout = 10;
+        Curl::$throw_exceptions = true; // a failed request is retried, not fatal
     }
 
     /**
@@ -115,7 +119,7 @@ class PolyAPI
             $this->requests++;
 
             try {
-                $response = $this->Client()->get($full, ['http_errors' => false]);
+                $response = Curl::Get($full, null, self::HEADERS);
             } catch (GuzzleException $e) {
                 $this->errors++;
                 if ($attempts >= 3) {
@@ -125,8 +129,8 @@ class PolyAPI
                 continue;
             }
 
-            $status = $response->getStatusCode();
-            $body = (string)$response->getBody();
+            $status = (int)$response->StatusCode;
+            $body = (string)$response->Body;
 
             if ($status === 200) {
                 $json = json_decode($body, true);
@@ -142,7 +146,7 @@ class PolyAPI
                 throw new RuntimeException('HTTP ' . $status . ': ' . $full . ' ' . substr($body, 0, 300));
             }
 
-            $wait = (int)($response->getHeaderLine('Retry-After') ?: 0);
+            $wait = (int)($response->HeaderHash['Retry-After'] ?? $response->HeaderHash['retry-after'] ?? 0);
             sleep(max(2, min(60, $wait ?: 5 * $attempts)));
         }
     }
@@ -165,23 +169,5 @@ class PolyAPI
             }
         }
         return implode('&', $parts);
-    }
-
-    /**
-     * @return Client
-     */
-    private function Client(): Client
-    {
-        if (!$this->client) {
-            $this->client = new Client([
-                'timeout'         => 30,
-                'connect_timeout' => 10,
-                'headers'         => [
-                    'Accept'     => 'application/json',
-                    'User-Agent' => 'poly-headcount-collector/1.0',
-                ],
-            ]);
-        }
-        return $this->client;
     }
 }
