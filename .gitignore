@@ -1,0 +1,8 @@
+/vendor
+/logs
+/web.config
+/.idea
+# copied from vendor by quickdry-publish on every composer install/update
+/QuickDRY
+/env.php
+/composer.lock
