@@ -49,6 +49,16 @@ CREATE TABLE IF NOT EXISTS market
     KEY ix_market_slug (slug)
 ) ENGINE = InnoDB;
 
+-- One row per market per tag, so you can filter and group by tag without
+-- parsing market.tags (which keeps the raw comma-separated list).
+CREATE TABLE IF NOT EXISTS market_tag
+(
+    condition_id VARCHAR(66)  NOT NULL,
+    tag          VARCHAR(255) NOT NULL,
+    PRIMARY KEY (condition_id, tag),
+    KEY ix_market_tag_tag (tag, condition_id)
+) ENGINE = InnoDB;
+
 -- One row each time we count a market's holders.
 CREATE TABLE IF NOT EXISTS snapshot
 (

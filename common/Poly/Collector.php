@@ -200,6 +200,45 @@ WHERE id = :id
 
         Store::InsertMany('market', self::MARKET_COLUMNS, $rows,
             'ON DUPLICATE KEY UPDATE ' . implode(', ', $update), 100);
+
+        self::SyncTags($rows);
+    }
+
+    /**
+     * Rewrite market_tag for these markets from their tags column, so it
+     * always matches the raw list in market.tags.
+     *
+     * @param array $rows market rows with condition_id and tags
+     * @return void
+     */
+    public static function SyncTags(array $rows): void
+    {
+        if (!$rows) {
+            return;
+        }
+
+        $params = [];
+        $in = [];
+        $tag_rows = [];
+        foreach (array_values($rows) as $i => $row) {
+            $cid = $row['condition_id'];
+            $in[] = ':cid' . $i;
+            $params['cid' . $i] = $cid;
+
+            $seen = [];
+            foreach (explode(',', (string)($row['tags'] ?? '')) as $tag) {
+                $tag = mb_substr(trim($tag), 0, 255);
+                $key = mb_strtolower($tag); // the column's collation is case-insensitive
+                if ($tag === '' || isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+                $tag_rows[] = ['condition_id' => $cid, 'tag' => $tag];
+            }
+        }
+
+        Store::Exec('DELETE FROM market_tag WHERE condition_id IN (' . implode(', ', $in) . ')', $params);
+        Store::InsertMany('market_tag', ['condition_id', 'tag'], $tag_rows, '', 300, true);
     }
 
     /**
@@ -537,6 +576,10 @@ UPDATE market SET ' . implode(', ', $sets) . ',
     snapshot_count = snapshot_count + :inc
 WHERE condition_id = :condition_id
 ', $params);
+
+        if ($row) {
+            self::SyncTags([$row]);
+        }
 
         if (!$error) {
             $this->stats['snapshots']++;

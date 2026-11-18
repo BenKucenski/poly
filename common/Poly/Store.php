@@ -59,9 +59,10 @@ class Store
      * @param array $rows each row is an associative array keyed by column
      * @param string $suffix e.g. an ON DUPLICATE KEY UPDATE clause
      * @param int $chunk rows per statement
+     * @param bool $ignore INSERT IGNORE (skip rows that hit a duplicate key)
      * @return void
      */
-    public static function InsertMany(string $table, array $columns, array $rows, string $suffix = '', int $chunk = 200): void
+    public static function InsertMany(string $table, array $columns, array $rows, string $suffix = '', int $chunk = 200, bool $ignore = false): void
     {
         foreach (array_chunk($rows, $chunk) as $batch) {
             $values = [];
@@ -76,7 +77,7 @@ class Store
                 $values[] = '(' . implode(', ', $ph) . ')';
             }
 
-            $sql = 'INSERT INTO `' . $table . '` (`' . implode('`, `', $columns) . '`) VALUES '
+            $sql = 'INSERT ' . ($ignore ? 'IGNORE ' : '') . 'INTO `' . $table . '` (`' . implode('`, `', $columns) . '`) VALUES '
                 . PHP_EOL . implode(',' . PHP_EOL, $values)
                 . ($suffix ? PHP_EOL . $suffix : '');
 
