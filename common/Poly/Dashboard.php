@@ -11,6 +11,13 @@ namespace common\Poly;
  * only over resolved markets' complete, error-free snapshots, so they don't
  * pay for every open market's snapshots the way querying the view would.
  * Like the README's starter queries, rates are averaged over snapshots.
+ *
+ * Timing: a count's signal exists when the holder walk finished
+ * (snapshot.completed_at), so "hours before close" is measured from there, the
+ * price favorite is judged on the order-book midpoint read at that moment, and
+ * the tradable numbers use the ask you could have bought at then. Snapshots
+ * from before order books were recorded fall back to captured_at and the
+ * Gamma price, and are left out of everything that needs an ask.
  */
 class Dashboard
 {
@@ -31,6 +38,7 @@ class Dashboard
             'cadence'       => static fn() => self::Cadence(),
             'accuracy'      => static fn() => self::AccuracyByDaysOut(),
             'crowd'         => static fn() => self::CrowdVsPrice(),
+            'forward'       => static fn() => self::ForwardReturns(),
             'tags'          => static fn() => self::Tags(20),
             'closing_soon'  => static fn() => self::ClosingSoon(12),
             'resolved'      => static fn() => self::RecentlyResolved(12),
@@ -239,56 +247,69 @@ GROUP BY band
     }
 
     /**
-     * Per-snapshot picks for resolved markets, as a SQL fragment shared by
-     * the accuracy queries. Columns: snapshot_id, condition_id, outcome_count,
-     * hours_before_close, winning_outcome_index, head_pick, head_pick_price,
-     * share_pick, price_pick (each pick NULL on a tie).
+     * Per-snapshot picks, as a SQL fragment shared by the accuracy and return
+     * queries. Complete, error-free snapshots only. Columns: snapshot_id,
+     * condition_id, outcome_count, signal_at, hours_before_close,
+     * winning_outcome_index (NULL until resolved), has_book, head_pick,
+     * head_pick_price (midpoint/price at the signal), head_pick_ask (what
+     * buying it cost then; NULL without a book), share_pick, price_pick.
+     * Each pick is NULL on a tie.
      *
+     * @param bool $resolved_only only markets that settled with a winner
      * @return string
      */
-    private static function PicksSQL(): string
+    private static function PicksSQL(bool $resolved_only = true): string
     {
         return '
 SELECT a.snapshot_id,
        a.condition_id,
        a.outcome_count,
+       a.signal_at,
        a.hours_before_close,
        a.winning_outcome_index,
+       a.has_book,
        IF(a.head_ties = 1, a.head_pick, NULL)        AS head_pick,
        IF(a.head_ties = 1, a.head_pick_price, NULL)  AS head_pick_price,
+       IF(a.head_ties = 1, a.head_pick_ask, NULL)    AS head_pick_ask,
        IF(a.share_ties = 1, a.share_pick, NULL)      AS share_pick,
        IF(a.price_ties = 1, a.price_pick, NULL)      AS price_pick
 FROM (SELECT r.snapshot_id,
              r.condition_id,
              r.outcome_count,
+             r.signal_at,
              r.hours_before_close,
              r.winning_outcome_index,
+             MAX(r.book_ask IS NOT NULL)                                    AS has_book,
              SUM(r.holder_count = r.max_holders)                            AS head_ties,
              MIN(IF(r.holder_count = r.max_holders, r.outcome_index, NULL)) AS head_pick,
-             MAX(IF(r.holder_count = r.max_holders, r.price, NULL))         AS head_pick_price,
+             MAX(IF(r.holder_count = r.max_holders, r.sig_price, NULL))     AS head_pick_price,
+             MAX(IF(r.holder_count = r.max_holders, r.book_ask, NULL))      AS head_pick_ask,
              SUM(r.total_shares = r.max_shares)                             AS share_ties,
              MIN(IF(r.total_shares = r.max_shares, r.outcome_index, NULL))  AS share_pick,
-             SUM(r.price = r.max_price)                                     AS price_ties,
-             MIN(IF(r.price = r.max_price, r.outcome_index, NULL))          AS price_pick
-      FROM (SELECT so.snapshot_id,
-                   s.condition_id,
-                   m.outcome_count,
-                   m.winning_outcome_index,
-                   TIMESTAMPDIFF(MINUTE, s.captured_at, COALESCE(m.closed_time, m.end_date)) / 60.0 AS hours_before_close,
-                   so.outcome_index,
-                   so.holder_count,
-                   so.total_shares,
-                   so.price,
-                   MAX(so.holder_count) OVER (PARTITION BY so.snapshot_id) AS max_holders,
-                   MAX(so.total_shares) OVER (PARTITION BY so.snapshot_id) AS max_shares,
-                   MAX(so.price) OVER (PARTITION BY so.snapshot_id)        AS max_price
-            FROM market m
-                     JOIN snapshot s ON s.condition_id = m.condition_id
-                     JOIN snapshot_outcome so ON so.snapshot_id = s.id
-            WHERE m.winning_outcome_index IS NOT NULL
-              AND s.is_complete = 1
-              AND s.error IS NULL) r
-      GROUP BY r.snapshot_id, r.condition_id, r.outcome_count, r.hours_before_close, r.winning_outcome_index) a
+             SUM(r.sig_price = r.max_price)                                 AS price_ties,
+             MIN(IF(r.sig_price = r.max_price, r.outcome_index, NULL))      AS price_pick
+      FROM (SELECT q.*,
+                   MAX(q.holder_count) OVER (PARTITION BY q.snapshot_id) AS max_holders,
+                   MAX(q.total_shares) OVER (PARTITION BY q.snapshot_id) AS max_shares,
+                   MAX(q.sig_price) OVER (PARTITION BY q.snapshot_id)    AS max_price
+            FROM (SELECT so.snapshot_id,
+                         s.condition_id,
+                         m.outcome_count,
+                         m.winning_outcome_index,
+                         COALESCE(s.completed_at, s.captured_at) AS signal_at,
+                         TIMESTAMPDIFF(MINUTE, COALESCE(s.completed_at, s.captured_at), COALESCE(m.closed_time, m.end_date)) / 60.0
+                                                                 AS hours_before_close,
+                         so.outcome_index,
+                         so.holder_count,
+                         so.total_shares,
+                         so.book_ask,
+                         COALESCE((so.book_bid + so.book_ask) / 2, so.price) AS sig_price
+                  FROM market m
+                           JOIN snapshot s ON s.condition_id = m.condition_id
+                           JOIN snapshot_outcome so ON so.snapshot_id = s.id
+                  WHERE ' . ($resolved_only ? 'm.winning_outcome_index IS NOT NULL AND ' : '') . 's.is_complete = 1
+                    AND s.error IS NULL) q) r
+      GROUP BY r.snapshot_id, r.condition_id, r.outcome_count, r.signal_at, r.hours_before_close, r.winning_outcome_index) a
 ';
     }
 
@@ -317,7 +338,9 @@ ORDER BY days_out
     /**
      * Overall accuracy, plus the snapshots where the most-held side was not the
      * price favorite: if the crowd's pick won more often than its average
-     * price, buying it would have paid.
+     * price, buying it would have paid. book_* / crowd_pick_ask repeat that
+     * using only snapshots with an order book, priced at the ask when the
+     * count finished: the edge you could actually have taken.
      *
      * @return array
      */
@@ -332,9 +355,56 @@ SELECT COUNT(DISTINCT p.condition_id)                                           
        COUNT(DISTINCT IF(p.head_pick <> p.price_pick, p.condition_id, NULL))       AS disagree_markets,
        SUM(p.head_pick <> p.price_pick)                                            AS disagree_snapshots,
        AVG(IF(p.head_pick <> p.price_pick, p.head_pick = p.winning_outcome_index, NULL)) AS crowd_win_rate,
-       AVG(IF(p.head_pick <> p.price_pick, p.head_pick_price, NULL))               AS crowd_pick_price
+       AVG(IF(p.head_pick <> p.price_pick, p.head_pick_price, NULL))               AS crowd_pick_price,
+       SUM(p.head_pick <> p.price_pick AND p.head_pick_ask IS NOT NULL)            AS book_snapshots,
+       COUNT(DISTINCT IF(p.head_pick <> p.price_pick AND p.head_pick_ask IS NOT NULL, p.condition_id, NULL))
+                                                                                   AS book_markets,
+       AVG(IF(p.head_pick <> p.price_pick AND p.head_pick_ask IS NOT NULL,
+              p.head_pick = p.winning_outcome_index, NULL))                        AS book_crowd_win_rate,
+       AVG(IF(p.head_pick <> p.price_pick, p.head_pick_ask, NULL))                 AS crowd_pick_ask
 FROM (' . self::PicksSQL() . ') p
 ') ?? [];
+    }
+
+    /**
+     * What buying the crowd's pick at the ask, the moment each count finished,
+     * would have returned: (a) sold at the bid when the market was next
+     * counted, and (b) held to resolution (pays 1 or 0). Per share, before
+     * fees. One row for disagreements (crowd != price), one for agreements,
+     * and a total row (disagree = NULL). Only snapshots with an order book.
+     *
+     * @return array
+     */
+    public static function ForwardReturns(): array
+    {
+        return Store::Rows('
+SELECT IF(p.head_pick <> p.price_pick, 1, 0)                                         AS disagree,
+       COUNT(*)                                                                      AS entries,
+       COUNT(DISTINCT p.condition_id)                                                AS markets,
+       AVG(p.head_pick_ask)                                                          AS entry_ask,
+       COUNT(n.book_bid)                                                             AS next_n,
+       AVG(IF(n.book_bid IS NULL, NULL,
+              TIMESTAMPDIFF(MINUTE, p.signal_at, COALESCE(ns.completed_at, ns.captured_at)) / 60.0))
+                                                                                     AS next_hours,
+       AVG(n.book_bid - p.head_pick_ask)                                             AS next_return,
+       AVG(n.book_bid / p.head_pick_ask - 1)                                         AS next_roi,
+       AVG(IF(n.book_bid IS NULL, NULL, n.book_bid > p.head_pick_ask))               AS next_up_share,
+       COUNT(p.winning_outcome_index)                                                AS res_n,
+       AVG(IF(p.winning_outcome_index IS NULL, NULL, (p.head_pick = p.winning_outcome_index) - p.head_pick_ask))
+                                                                                     AS res_return,
+       AVG(IF(p.winning_outcome_index IS NULL, NULL, (p.head_pick = p.winning_outcome_index) / p.head_pick_ask - 1))
+                                                                                     AS res_roi
+FROM (' . self::PicksSQL(false) . ') p
+         JOIN (SELECT id, LEAD(id) OVER (PARTITION BY condition_id ORDER BY captured_at) AS next_id
+               FROM snapshot
+               WHERE error IS NULL) nx ON nx.id = p.snapshot_id
+         LEFT JOIN snapshot ns ON ns.id = nx.next_id
+         LEFT JOIN snapshot_outcome n ON n.snapshot_id = nx.next_id AND n.outcome_index = p.head_pick
+WHERE p.head_pick IS NOT NULL
+  AND p.price_pick IS NOT NULL
+  AND p.head_pick_ask > 0
+GROUP BY disagree WITH ROLLUP
+');
     }
 
     /**
@@ -458,7 +528,7 @@ WHERE s.error IS NULL
         if ($snaps) {
             $ids = array_map('intval', array_column($snaps, 'id'));
             foreach (Store::Rows('
-SELECT snapshot_id, outcome_index, outcome, price, holder_count, total_shares
+SELECT snapshot_id, outcome_index, outcome, price, holder_count, total_shares, book_bid, book_ask
 FROM snapshot_outcome
 WHERE snapshot_id IN (' . implode(', ', $ids) . ')
 ORDER BY snapshot_id, outcome_index
@@ -478,13 +548,21 @@ ORDER BY snapshot_id, outcome_index
 
     /**
      * The outcome index with the most holders, most shares and highest price
-     * (NULL when two outcomes tie for first), as in v_snapshot_vs_result.
+     * (NULL when two outcomes tie for first), as in v_snapshot_vs_result. The
+     * price is the order-book midpoint when there is one, else the Gamma price.
      *
      * @param array $outcomes snapshot_outcome rows
      * @return array{headcount: ?int, shares: ?int, price: ?int}
      */
     public static function Picks(array $outcomes): array
     {
+        foreach ($outcomes as &$o) {
+            $o['sig_price'] = isset($o['book_bid'], $o['book_ask'])
+                ? ((float)$o['book_bid'] + (float)$o['book_ask']) / 2
+                : ($o['price'] ?? null);
+        }
+        unset($o);
+
         $pick = static function (string $col) use ($outcomes): ?int {
             if (!$outcomes) {
                 return null;
@@ -501,7 +579,7 @@ ORDER BY snapshot_id, outcome_index
         return [
             'headcount' => $pick('holder_count'),
             'shares'    => $pick('total_shares'),
-            'price'     => $pick('price'),
+            'price'     => $pick('sig_price'),
         ];
     }
 

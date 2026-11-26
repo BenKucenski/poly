@@ -20,6 +20,7 @@ class home extends BasePage
     public static array $Cadence = [];
     public static array $Accuracy = [];
     public static array $CrowdVsPrice = [];
+    public static array $Forward = [];
     public static array $Tags = [];
     public static array $ClosingSoon = [];
     public static array $Resolved = [];
@@ -66,6 +67,7 @@ class home extends BasePage
             'cadence'      => 'Cadence',
             'accuracy'     => 'Accuracy',
             'crowd'        => 'CrowdVsPrice',
+            'forward'      => 'Forward',
             'tags'         => 'Tags',
             'closing_soon' => 'ClosingSoon',
             'resolved'     => 'Resolved',
@@ -127,6 +129,28 @@ class home extends BasePage
     public static function Cents(mixed $v): string
     {
         return $v === null || $v === '' ? '–' : number_format((float)$v * 100, 1) . '¢';
+    }
+
+    /**
+     * A signed per-share amount or rate, with an arrow so the sign never
+     * rides on color alone.
+     *
+     * @param mixed $v
+     * @param string $unit 'cents' (price units shown as ¢) or 'pct'
+     * @return string HTML
+     */
+    public static function Signed(mixed $v, string $unit = 'cents'): string
+    {
+        if ($v === null || $v === '') {
+            return '<span class="text-body-secondary">–</span>';
+        }
+        $x = (float)$v * 100;
+        $text = ($x > 0 ? '+' : ($x < 0 ? '−' : '')) . number_format(abs($x), 1) . ($unit === 'pct' ? '%' : '¢');
+        if (abs($x) < 0.05) {
+            return '<span>' . $text . '</span>';
+        }
+        return '<span class="status ' . ($x > 0 ? 'status-good' : 'status-critical') . '"><span aria-hidden="true">'
+            . ($x > 0 ? '▲' : '▼') . '</span> ' . $text . '</span>';
     }
 
     /**

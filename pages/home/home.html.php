@@ -170,7 +170,7 @@ $chart_data = [
         <div class="panel h-100">
             <h2 class="panel-title">Which majority picked the winner, by days before close</h2>
             <p class="panel-note">
-                Resolved binary markets, complete snapshots only. Rates are averaged over snapshots; the table counts distinct markets.
+                Resolved binary markets, complete snapshots only, timed from when each count finished. Rates are averaged over snapshots; the table counts distinct markets.
                 Days past <?php echo \common\Poly\Dashboard::MAX_DAYS_OUT; ?> are folded into the last point.
             </p>
             <?php if (home::$Accuracy) { ?>
@@ -207,23 +207,28 @@ $chart_data = [
             <h2 class="panel-title">When the crowd and the price disagree</h2>
             <p class="panel-note">Snapshots where the side held by the most wallets wasn't the price favorite. If the crowd's pick wins more often than its average price, buying it would have paid.</p>
             <?php if (!empty($cvp['snapshots'])) {
-                $edge = ($cvp['crowd_win_rate'] !== null && $cvp['crowd_pick_price'] !== null)
+                $edge_ask = ($cvp['book_crowd_win_rate'] !== null && $cvp['crowd_pick_ask'] !== null)
+                    ? (float)$cvp['book_crowd_win_rate'] - (float)$cvp['crowd_pick_ask'] : null;
+                $edge_mid = ($cvp['crowd_win_rate'] !== null && $cvp['crowd_pick_price'] !== null)
                     ? (float)$cvp['crowd_win_rate'] - (float)$cvp['crowd_pick_price'] : null; ?>
+                <h3 class="h6 mb-2">At the ask when the count finished</h3>
+                <?php if ((int)$cvp['book_snapshots'] > 0) { ?>
+                    <dl class="stat-list">
+                        <div><dt>Disagreeing snapshots</dt><dd><?php echo home::Num($cvp['book_snapshots']); ?> <span class="text-body-secondary small">in <?php echo home::Num($cvp['book_markets']); ?> markets</span></dd></div>
+                        <div><dt>Crowd's pick won</dt><dd><?php echo home::Pct($cvp['book_crowd_win_rate']); ?></dd></div>
+                        <div><dt>Average ask for crowd's pick</dt><dd><?php echo home::Cents($cvp['crowd_pick_ask']); ?></dd></div>
+                        <div><dt>Edge (win rate − ask)</dt><dd><?php echo home::Signed($edge_ask); ?></dd></div>
+                    </dl>
+                <?php } else { ?>
+                    <p class="small text-body-secondary">No order-book data on resolved markets yet. This starts with counts taken after migration 003.</p>
+                <?php } ?>
+                <hr>
+                <h3 class="h6 mb-2">At the midpoint, all snapshots <span class="fw-normal text-body-secondary small">(not tradable)</span></h3>
                 <dl class="stat-list">
                     <div><dt>Disagreeing snapshots</dt><dd><?php echo home::Num($cvp['disagree_snapshots']); ?> <span class="text-body-secondary small">in <?php echo home::Num($cvp['disagree_markets']); ?> markets</span></dd></div>
                     <div><dt>Crowd's pick won</dt><dd><?php echo home::Pct($cvp['crowd_win_rate']); ?></dd></div>
                     <div><dt>Average price of crowd's pick</dt><dd><?php echo home::Cents($cvp['crowd_pick_price']); ?></dd></div>
-                    <div>
-                        <dt>Edge (win rate − price)</dt>
-                        <dd>
-                            <?php if ($edge === null) { ?>–<?php } else { ?>
-                                <span class="status <?php echo $edge > 0 ? 'status-good' : 'status-critical'; ?>">
-                                    <span aria-hidden="true"><?php echo $edge > 0 ? '▲' : '▼'; ?></span>
-                                    <?php echo ($edge > 0 ? '+' : '') . number_format($edge * 100, 1); ?> pts
-                                </span>
-                            <?php } ?>
-                        </dd>
-                    </div>
+                    <div><dt>Edge (win rate − price)</dt><dd><?php echo home::Signed($edge_mid); ?></dd></div>
                 </dl>
                 <hr>
                 <h3 class="h6 mb-2">All resolved snapshots</h3>
@@ -240,10 +245,60 @@ $chart_data = [
     </div>
 </section>
 
+<!-- Forward returns -->
+<section class="panel mb-4">
+    <h2 class="panel-title">If you'd bought the crowd's pick when each count finished</h2>
+    <p class="panel-note">
+        Bought at the ask the moment the head count was known. Sold at the bid at the market's next count, or held until it settled (pays $1 or $0).
+        Per share, before fees. Only counts with an order book (from migration 003 on); open markets count toward the next-count columns.
+    </p>
+    <?php
+    $fw = array_column(array_map(static fn($r) => $r + ['key' => $r['disagree'] === null ? 'all' : ($r['disagree'] ? 'disagree' : 'agree')], home::$Forward), null, 'key');
+    if ($fw) { ?>
+        <div class="table-responsive">
+            <table class="table table-sm table-numeric align-middle mb-0">
+                <thead>
+                <tr>
+                    <th rowspan="2" class="align-bottom">When</th>
+                    <th rowspan="2" class="align-bottom">Entries</th>
+                    <th rowspan="2" class="align-bottom">Avg ask</th>
+                    <th colspan="4" class="text-center border-start">Sold at the next count</th>
+                    <th colspan="3" class="text-center border-start">Held to resolution</th>
+                </tr>
+                <tr>
+                    <th class="border-start">Trades</th><th>Avg hold</th><th>Return/share</th><th>Return</th>
+                    <th class="border-start">Trades</th><th>Return/share</th><th>Return</th>
+                </tr>
+                </thead>
+                <tbody>
+                <?php foreach (['disagree' => 'Crowd ≠ price favorite', 'agree' => 'Crowd = price favorite', 'all' => 'Every head-count pick'] as $key => $label) {
+                    $r = $fw[$key] ?? null;
+                    if (!$r) { continue; } ?>
+                    <tr<?php echo $key === 'all' ? ' class="fw-semibold"' : ''; ?>>
+                        <td><?php echo home::H($label); ?></td>
+                        <td><?php echo home::Num($r['entries']); ?> <span class="text-body-secondary small fw-normal">/ <?php echo home::Num($r['markets']); ?> mkts</span></td>
+                        <td><?php echo home::Cents($r['entry_ask']); ?></td>
+                        <td class="border-start"><?php echo home::Num($r['next_n']); ?></td>
+                        <td><?php echo $r['next_hours'] === null ? '–' : home::Num($r['next_hours'], 1) . ' h'; ?></td>
+                        <td><?php echo home::Signed($r['next_return']); ?></td>
+                        <td><?php echo home::Signed($r['next_roi'], 'pct'); ?></td>
+                        <td class="border-start"><?php echo home::Num($r['res_n']); ?></td>
+                        <td><?php echo home::Signed($r['res_return']); ?></td>
+                        <td><?php echo home::Signed($r['res_roi'], 'pct'); ?></td>
+                    </tr>
+                <?php } ?>
+                </tbody>
+            </table>
+        </div>
+    <?php } else { ?>
+        <div class="empty">No counts with order-book prices yet. They start with the first collector run after migration 003.</div>
+    <?php } ?>
+</section>
+
 <!-- Closing soon -->
 <section class="panel mb-4">
     <h2 class="panel-title">Closing soonest</h2>
-    <p class="panel-note">Open markets with the nearest end dates and their latest count. Head-count share is the leading side's share of wallets.</p>
+    <p class="panel-note">Open markets with the nearest end dates and their latest count. Head-count share is the leading side's share of wallets; "ask" is what buying it cost when the count finished. The price favorite uses the order-book midpoint.</p>
     <?php if (home::$ClosingSoon) { ?>
         <div class="table-responsive">
             <table class="table table-sm align-middle mb-0">
@@ -272,12 +327,17 @@ $chart_data = [
                             <?php if ($m['snapshot']) { ?>
                                 <?php echo home::H(home::OutcomeLabel($m, $hp)); ?>
                                 <?php if ($hp !== null && $all > 0) { ?><span class="text-body-secondary small"><?php echo home::Pct($o[$hp]['holder_count'] / $all); ?></span><?php } ?>
+                                <?php if ($hp !== null && $o[$hp]['book_ask'] !== null) { ?><div class="small text-body-secondary">ask <?php echo home::Cents($o[$hp]['book_ask']); ?></div><?php } ?>
                             <?php } else { ?>–<?php } ?>
                         </td>
                         <td class="text-nowrap">
                             <?php if ($m['snapshot']) { ?>
                                 <?php echo home::H(home::OutcomeLabel($m, $pp)); ?>
-                                <?php if ($pp !== null) { ?><span class="text-body-secondary small"><?php echo home::Cents($o[$pp]['price']); ?></span><?php } ?>
+                                <?php if ($pp !== null) {
+                                    $mid = $o[$pp]['book_bid'] !== null && $o[$pp]['book_ask'] !== null
+                                        ? ((float)$o[$pp]['book_bid'] + (float)$o[$pp]['book_ask']) / 2 : $o[$pp]['price']; ?>
+                                    <span class="text-body-secondary small"><?php echo home::Cents($mid); ?></span>
+                                <?php } ?>
                             <?php } else { ?>–<?php } ?>
                         </td>
                         <td class="text-nowrap small"><?php echo $m['snapshot'] ? home::H(home::Ago(strtotime($m['snapshot']['captured_at'] . ' UTC'))) : 'never'; ?></td>

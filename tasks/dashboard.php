@@ -9,7 +9,7 @@ declare(strict_types=1);
 //   php tasks/dashboard.php -q                   quiet (errors only)
 //   php tasks/dashboard.php -stotals,runs        rebuild only these sections
 //
-// Sections: totals, runs, cadence, accuracy, crowd, tags, closing_soon, resolved, tables
+// Sections: totals, runs, cadence, accuracy, crowd, forward, tags, closing_soon, resolved, tables
 // Exits with code 1 if any section failed (its last good data stays on the page).
 
 use common\Poly\Dashboard;
