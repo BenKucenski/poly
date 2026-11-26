@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS snapshot
     error              VARCHAR(1000) NULL,
     PRIMARY KEY (id),
     KEY ix_snapshot_market (condition_id, captured_at),
+    KEY ix_snapshot_captured (captured_at),
     KEY ix_snapshot_run (run_id)
 ) ENGINE = InnoDB;
 
@@ -145,6 +146,35 @@ CREATE TABLE IF NOT EXISTS collector_state
     PRIMARY KEY (name)
 ) ENGINE = InnoDB;
 
+-- One row per error-free snapshot with the picks worked out once: which
+-- outcome had the most wallets, the most shares and the highest price (order-
+-- book midpoint when recorded), what buying the head-count pick cost, and the
+-- bid for that same outcome at the market's next count. Written incrementally
+-- by tasks/dashboard.php (it only reads the collector's tables, never locks
+-- them); the dashboard's aggregates read this instead of recomputing picks
+-- over all of snapshot_outcome. Safe to TRUNCATE: the next build refills it.
+CREATE TABLE IF NOT EXISTS snapshot_pick
+(
+    snapshot_id       BIGINT         NOT NULL,
+    condition_id      VARCHAR(66)    NOT NULL,
+    signal_at         DATETIME       NOT NULL COMMENT 'completed_at, or captured_at on snapshots from before it existed',
+    is_complete       TINYINT(1)     NOT NULL,
+    has_book          TINYINT(1)     NOT NULL DEFAULT 0,
+    all_holders       INT            NOT NULL DEFAULT 0,
+    head_pick         TINYINT        NULL COMMENT 'NULL on a tie',
+    head_pick_holders INT            NULL,
+    head_pick_price   DECIMAL(10, 6) NULL COMMENT 'midpoint (or Gamma price) of the head-count pick at signal_at',
+    head_pick_ask     DECIMAL(10, 6) NULL COMMENT 'what buying the head-count pick cost at signal_at',
+    share_pick        TINYINT        NULL,
+    price_pick        TINYINT        NULL,
+    price_pick_price  DECIMAL(10, 6) NULL,
+    next_snapshot_id  BIGINT         NULL COMMENT 'the market''s next error-free snapshot',
+    next_signal_at    DATETIME       NULL,
+    next_head_bid     DECIMAL(10, 6) NULL COMMENT 'bid for head_pick at the next snapshot',
+    PRIMARY KEY (snapshot_id),
+    KEY ix_pick_market (condition_id, snapshot_id)
+) ENGINE = InnoDB;
+
 -- Precomputed dashboard sections, written by tasks/dashboard.php and read by
 -- the homepage, so a page view runs no heavy queries. One row per section.
 CREATE TABLE IF NOT EXISTS dashboard_cache
@@ -157,73 +187,3 @@ CREATE TABLE IF NOT EXISTS dashboard_cache
     tried_at   DATETIME    NOT NULL COMMENT 'last rebuild attempt (UTC)',
     PRIMARY KEY (name)
 ) ENGINE = InnoDB;
-
--- For each snapshot: which outcome had the most wallets (head count), the most
--- shares (money), and the highest price, next to how the market resolved.
--- A *_pick is NULL when two outcomes tie for first.
--- "Price" is the order-book midpoint when the count finished (book_bid/book_ask),
--- falling back to the Gamma price for snapshots taken before order books were
--- recorded. headcount_pick_ask is what buying the crowd's pick would have cost
--- at that moment (NULL without order-book data).
--- Filter on winning_outcome_index IS NOT NULL to see only resolved markets.
-CREATE OR REPLACE VIEW v_snapshot_vs_result AS
-SELECT s.id                                                              AS snapshot_id,
-       s.condition_id,
-       m.question,
-       m.event_title,
-       m.tags,
-       m.sports_market_type,
-       m.outcome_count,
-       m.neg_risk,
-       s.captured_at,
-       s.completed_at,
-       COALESCE(s.completed_at, s.captured_at)                           AS signal_at,
-       COALESCE(m.closed_time, m.end_date)                               AS close_at,
-       TIMESTAMPDIFF(MINUTE, COALESCE(s.completed_at, s.captured_at), COALESCE(m.closed_time, m.end_date)) / 60.0
-                                                                         AS hours_before_close,
-       s.is_complete,
-       s.unique_holders,
-       s.volume_num,
-       a.has_book,
-       a.all_holders,
-       IF(a.head_ties = 1, a.head_pick, NULL)                            AS headcount_pick,
-       a.head_pick_holders / NULLIF(a.all_holders, 0)                    AS headcount_pick_share,
-       IF(a.head_ties = 1, a.head_pick_price, NULL)                      AS headcount_pick_price,
-       IF(a.head_ties = 1, a.head_pick_ask, NULL)                        AS headcount_pick_ask,
-       IF(a.share_ties = 1, a.share_pick, NULL)                          AS shares_pick,
-       IF(a.price_ties = 1, a.price_pick, NULL)                          AS price_pick,
-       a.price_pick_price,
-       m.winning_outcome_index,
-       m.winning_outcome,
-       IF(a.head_ties = 1 AND m.winning_outcome_index IS NOT NULL,
-          a.head_pick = m.winning_outcome_index, NULL)                   AS headcount_correct,
-       IF(a.share_ties = 1 AND m.winning_outcome_index IS NOT NULL,
-          a.share_pick = m.winning_outcome_index, NULL)                  AS shares_correct,
-       IF(a.price_ties = 1 AND m.winning_outcome_index IS NOT NULL,
-          a.price_pick = m.winning_outcome_index, NULL)                  AS price_correct,
-       IF(a.head_ties = 1 AND a.price_ties = 1, a.head_pick <> a.price_pick, NULL)
-                                                                         AS crowd_disagrees_with_price
-FROM snapshot s
-         JOIN market m ON m.condition_id = s.condition_id
-         JOIN (SELECT r.snapshot_id,
-                      MAX(r.book_ask IS NOT NULL)                                      AS has_book,
-                      SUM(r.holder_count)                                              AS all_holders,
-                      SUM(r.holder_count = r.max_holders)                              AS head_ties,
-                      MIN(IF(r.holder_count = r.max_holders, r.outcome_index, NULL))   AS head_pick,
-                      MAX(r.max_holders)                                               AS head_pick_holders,
-                      MAX(IF(r.holder_count = r.max_holders, r.sig_price, NULL))       AS head_pick_price,
-                      MAX(IF(r.holder_count = r.max_holders, r.book_ask, NULL))        AS head_pick_ask,
-                      SUM(r.total_shares = r.max_shares)                               AS share_ties,
-                      MIN(IF(r.total_shares = r.max_shares, r.outcome_index, NULL))    AS share_pick,
-                      SUM(r.sig_price = r.max_price)                                   AS price_ties,
-                      MIN(IF(r.sig_price = r.max_price, r.outcome_index, NULL))        AS price_pick,
-                      MAX(r.max_price)                                                 AS price_pick_price
-               FROM (SELECT p.*,
-                            MAX(p.holder_count) OVER (PARTITION BY p.snapshot_id) AS max_holders,
-                            MAX(p.total_shares) OVER (PARTITION BY p.snapshot_id) AS max_shares,
-                            MAX(p.sig_price) OVER (PARTITION BY p.snapshot_id)    AS max_price
-                     FROM (SELECT so.*,
-                                  COALESCE((so.book_bid + so.book_ask) / 2, so.price) AS sig_price
-                           FROM snapshot_outcome so) p) r
-               GROUP BY r.snapshot_id) a ON a.snapshot_id = s.id
-WHERE s.error IS NULL;

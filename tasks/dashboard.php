@@ -5,6 +5,10 @@ declare(strict_types=1);
 // view only reads stored results. Schedule it every 15 minutes or so; it takes
 // seconds, and each run replaces the previous numbers.
 //
+// Each run first adds picks for snapshots collected since the last run to
+// snapshot_pick (common/Poly/Picks.php). The first run after migration 004
+// back-fills them; a long back-fill stops after 10 minutes and resumes.
+//
 //   php tasks/dashboard.php                      rebuild every section
 //   php tasks/dashboard.php -q                   quiet (errors only)
 //   php tasks/dashboard.php -stotals,runs        rebuild only these sections

@@ -3,34 +3,37 @@ declare(strict_types=1);
 
 namespace pages\home;
 
+use models\reports\AccuracyByDaysOutDTO;
+use models\reports\ForwardReturnDTO;
+
 $t = home::$Totals;
 $cvp = home::$CrowdVsPrice;
 $last_run = home::$Runs[0] ?? null;
-$has_data = (int)($t['markets'] ?? 0) > 0;
+$has_data = (int)($t?->markets ?? 0) > 0;
 
 // Oldest-first runs for the chart.
 $chart_runs = array_reverse(home::$Runs);
 
 $chart_data = [
     'runs' => array_map(static fn($r) => [
-        'id'        => (int)$r['id'],
-        'started'   => gmdate('Y-m-d\TH:i:s\Z', strtotime($r['started_at'] . ' UTC')),
-        'status'    => $r['status'],
-        'snapshots' => (int)$r['snapshots'],
-        'due'       => $r['due_remaining'] === null ? null : (int)$r['due_remaining'],
-        'errors'    => (int)$r['http_errors'],
-        'seconds'   => (int)$r['seconds'],
+        'id'        => (int)$r->id,
+        'started'   => gmdate('Y-m-d\TH:i:s\Z', strtotime($r->started_at . ' UTC')),
+        'status'    => $r->status,
+        'snapshots' => (int)$r->snapshots,
+        'due'       => $r->due_remaining === null ? null : (int)$r->due_remaining,
+        'errors'    => (int)$r->http_errors,
+        'seconds'   => (int)$r->seconds,
     ], $chart_runs),
     'cadence' => home::$Cadence,
     'accuracy' => array_map(static fn($a) => [
-        'days'      => (int)$a['days_out'],
-        'markets'   => (int)$a['markets'],
-        'snapshots' => (int)$a['snapshots'],
-        'headcount' => $a['headcount_acc'] === null ? null : (float)$a['headcount_acc'],
-        'shares'    => $a['shares_acc'] === null ? null : (float)$a['shares_acc'],
-        'price'     => $a['price_acc'] === null ? null : (float)$a['price_acc'],
+        'days'      => (int)$a->days_out,
+        'markets'   => (int)$a->markets,
+        'snapshots' => (int)$a->snapshots,
+        'headcount' => $a->headcount_acc === null ? null : (float)$a->headcount_acc,
+        'shares'    => $a->shares_acc === null ? null : (float)$a->shares_acc,
+        'price'     => $a->price_acc === null ? null : (float)$a->price_acc,
     ], home::$Accuracy),
-    'maxDaysOut' => \common\Poly\Dashboard::MAX_DAYS_OUT,
+    'maxDaysOut' => AccuracyByDaysOutDTO::MAX_DAYS_OUT,
 ];
 ?>
 
@@ -38,9 +41,9 @@ $chart_data = [
     <div>
         <h1 class="h3 mb-1">poly <span class="text-body-secondary fw-normal">· Polymarket head counts</span></h1>
         <div class="text-body-secondary small">
-            <?php if ($has_data && !empty($t['first_snapshot_ever'])) { ?>
-                Snapshots from <?php echo home::Time($t['first_snapshot_ever']); ?>
-                to <?php echo home::Time($t['last_snapshot_ever'], true); ?>
+            <?php if ($has_data && !empty($t?->first_snapshot_ever)) { ?>
+                Snapshots from <?php echo home::Time($t?->first_snapshot_ever); ?>
+                to <?php echo home::Time($t?->last_snapshot_ever, true); ?>
             <?php } else { ?>
                 No snapshots yet
             <?php } ?>
@@ -90,43 +93,43 @@ $chart_data = [
     <div class="col-6 col-md-4 col-xl-2">
         <div class="tile">
             <div class="tile-label">Open markets tracked</div>
-            <div class="tile-value"><?php echo home::Num($t['open_tracking'] ?? 0); ?></div>
-            <div class="tile-sub"><?php echo home::Num($t['due_now'] ?? 0); ?> due now · <?php echo home::Num($t['new_24h'] ?? 0); ?> new in 24 h</div>
+            <div class="tile-value"><?php echo home::Num($t?->open_tracking ?? 0); ?></div>
+            <div class="tile-sub"><?php echo home::Num($t?->due_now ?? 0); ?> due now · <?php echo home::Num($t?->new_24h ?? 0); ?> new in 24 h</div>
         </div>
     </div>
     <div class="col-6 col-md-4 col-xl-2">
         <div class="tile">
             <div class="tile-label">Resolved with a winner</div>
-            <div class="tile-value"><?php echo home::Num($t['resolved'] ?? 0); ?></div>
-            <div class="tile-sub"><?php echo home::Num($t['awaiting_result'] ?? 0); ?> closed, awaiting result</div>
+            <div class="tile-value"><?php echo home::Num($t?->resolved ?? 0); ?></div>
+            <div class="tile-sub"><?php echo home::Num($t?->awaiting_result ?? 0); ?> closed, awaiting result</div>
         </div>
     </div>
     <div class="col-6 col-md-4 col-xl-2">
         <div class="tile">
             <div class="tile-label">Snapshots</div>
-            <div class="tile-value"><?php echo home::Num($t['snapshots'] ?? 0); ?></div>
+            <div class="tile-value"><?php echo home::Num($t?->snapshots ?? 0); ?></div>
             <div class="tile-sub">
-                <?php echo home::Num($t['snapshots_24h'] ?? 0); ?> in 24 h
-                · <?php echo home::Num($t['incomplete_24h'] ?? 0); ?> incomplete
-                · <?php echo home::Num($t['errors_24h'] ?? 0); ?> errors
+                <?php echo home::Num($t?->snapshots_24h ?? 0); ?> in 24 h
+                · <?php echo home::Num($t?->incomplete_24h ?? 0); ?> incomplete
+                · <?php echo home::Num($t?->errors_24h ?? 0); ?> errors
             </div>
         </div>
     </div>
     <div class="col-6 col-md-4 col-xl-2">
         <div class="tile">
             <div class="tile-label">Markets · events</div>
-            <div class="tile-value"><?php echo home::Num($t['markets'] ?? 0); ?></div>
-            <div class="tile-sub">in <?php echo home::Num($t['events'] ?? 0); ?> events · <?php echo home::Money($t['open_volume'] ?? 0); ?> open volume</div>
+            <div class="tile-value"><?php echo home::Num($t?->markets ?? 0); ?></div>
+            <div class="tile-sub">in <?php echo home::Num($t?->events ?? 0); ?> events · <?php echo home::Money($t?->open_volume ?? 0); ?> open volume</div>
         </div>
     </div>
     <div class="col-6 col-md-4 col-xl-2">
         <div class="tile">
             <div class="tile-label">Last run</div>
             <?php if ($last_run) { ?>
-                <div class="tile-value tile-value-sm"><?php echo home::StatusBadge($last_run['status']); ?></div>
+                <div class="tile-value tile-value-sm"><?php echo home::StatusBadge($last_run->status); ?></div>
                 <div class="tile-sub">
-                    #<?php echo (int)$last_run['id']; ?> · started <?php echo home::H(home::Ago(strtotime($last_run['started_at'] . ' UTC'))); ?>
-                    · <?php echo home::Duration($last_run['seconds']); ?>
+                    #<?php echo (int)$last_run->id; ?> · started <?php echo home::H(home::Ago(strtotime($last_run->started_at . ' UTC'))); ?>
+                    · <?php echo home::Duration($last_run->seconds); ?>
                 </div>
             <?php } else { ?>
                 <div class="tile-value tile-value-sm text-body-secondary">none yet</div>
@@ -136,12 +139,12 @@ $chart_data = [
     <div class="col-6 col-md-4 col-xl-2">
         <div class="tile">
             <div class="tile-label">Last discovery</div>
-            <?php if (!empty($t['last_discovery_at'])) { ?>
-                <div class="tile-value tile-value-sm"><?php echo home::H(home::Ago(strtotime($t['last_discovery_at'] . ' UTC'))); ?></div>
+            <?php if (!empty($t?->last_discovery_at)) { ?>
+                <div class="tile-value tile-value-sm"><?php echo home::H(home::Ago(strtotime($t?->last_discovery_at . ' UTC'))); ?></div>
             <?php } else { ?>
                 <div class="tile-value tile-value-sm text-body-secondary">not finished yet</div>
             <?php } ?>
-            <div class="tile-sub"><?php echo !empty($t['discovery_cursor']) ? 'partway through; resumes next run' : 'full pass complete'; ?></div>
+            <div class="tile-sub"><?php echo !empty($t?->discovery_cursor) ? 'partway through; resumes next run' : 'full pass complete'; ?></div>
         </div>
     </div>
 </section>
@@ -171,7 +174,7 @@ $chart_data = [
             <h2 class="panel-title">Which majority picked the winner, by days before close</h2>
             <p class="panel-note">
                 Resolved binary markets, complete snapshots only, timed from when each count finished. Rates are averaged over snapshots; the table counts distinct markets.
-                Days past <?php echo \common\Poly\Dashboard::MAX_DAYS_OUT; ?> are folded into the last point.
+                Days past <?php echo AccuracyByDaysOutDTO::MAX_DAYS_OUT; ?> are folded into the last point.
             </p>
             <?php if (home::$Accuracy) { ?>
                 <div class="chart-box"><canvas id="chart-accuracy" aria-label="Pick accuracy by days before close" role="img"></canvas></div>
@@ -185,12 +188,12 @@ $chart_data = [
                             <tbody>
                             <?php foreach (home::$Accuracy as $a) { ?>
                                 <tr>
-                                    <td><?php echo (int)$a['days_out'] . ((int)$a['days_out'] === \common\Poly\Dashboard::MAX_DAYS_OUT ? '+' : ''); ?></td>
-                                    <td><?php echo home::Num($a['markets']); ?></td>
-                                    <td><?php echo home::Num($a['snapshots']); ?></td>
-                                    <td><?php echo home::Pct($a['headcount_acc']); ?></td>
-                                    <td><?php echo home::Pct($a['shares_acc']); ?></td>
-                                    <td><?php echo home::Pct($a['price_acc']); ?></td>
+                                    <td><?php echo home::H($a->Label()); ?></td>
+                                    <td><?php echo home::Num($a->markets); ?></td>
+                                    <td><?php echo home::Num($a->snapshots); ?></td>
+                                    <td><?php echo home::Pct($a->headcount_acc); ?></td>
+                                    <td><?php echo home::Pct($a->shares_acc); ?></td>
+                                    <td><?php echo home::Pct($a->price_acc); ?></td>
                                 </tr>
                             <?php } ?>
                             </tbody>
@@ -206,18 +209,14 @@ $chart_data = [
         <div class="panel h-100">
             <h2 class="panel-title">When the crowd and the price disagree</h2>
             <p class="panel-note">Snapshots where the side held by the most wallets wasn't the price favorite. If the crowd's pick wins more often than its average price, buying it would have paid.</p>
-            <?php if (!empty($cvp['snapshots'])) {
-                $edge_ask = ($cvp['book_crowd_win_rate'] !== null && $cvp['crowd_pick_ask'] !== null)
-                    ? (float)$cvp['book_crowd_win_rate'] - (float)$cvp['crowd_pick_ask'] : null;
-                $edge_mid = ($cvp['crowd_win_rate'] !== null && $cvp['crowd_pick_price'] !== null)
-                    ? (float)$cvp['crowd_win_rate'] - (float)$cvp['crowd_pick_price'] : null; ?>
+            <?php if ($cvp && $cvp->snapshots) { ?>
                 <h3 class="h6 mb-2">At the ask when the count finished</h3>
-                <?php if ((int)$cvp['book_snapshots'] > 0) { ?>
+                <?php if ($cvp->book_snapshots > 0) { ?>
                     <dl class="stat-list">
-                        <div><dt>Disagreeing snapshots</dt><dd><?php echo home::Num($cvp['book_snapshots']); ?> <span class="text-body-secondary small">in <?php echo home::Num($cvp['book_markets']); ?> markets</span></dd></div>
-                        <div><dt>Crowd's pick won</dt><dd><?php echo home::Pct($cvp['book_crowd_win_rate']); ?></dd></div>
-                        <div><dt>Average ask for crowd's pick</dt><dd><?php echo home::Cents($cvp['crowd_pick_ask']); ?></dd></div>
-                        <div><dt>Edge (win rate − ask)</dt><dd><?php echo home::Signed($edge_ask); ?></dd></div>
+                        <div><dt>Disagreeing snapshots</dt><dd><?php echo home::Num($cvp->book_snapshots); ?> <span class="text-body-secondary small">in <?php echo home::Num($cvp->book_markets); ?> markets</span></dd></div>
+                        <div><dt>Crowd's pick won</dt><dd><?php echo home::Pct($cvp->book_crowd_win_rate); ?></dd></div>
+                        <div><dt>Average ask for crowd's pick</dt><dd><?php echo home::Cents($cvp->crowd_pick_ask); ?></dd></div>
+                        <div><dt>Edge (win rate − ask)</dt><dd><?php echo home::Signed($cvp->EdgeAtAsk()); ?></dd></div>
                     </dl>
                 <?php } else { ?>
                     <p class="small text-body-secondary">No order-book data on resolved markets yet. This starts with counts taken after migration 003.</p>
@@ -225,18 +224,18 @@ $chart_data = [
                 <hr>
                 <h3 class="h6 mb-2">At the midpoint, all snapshots <span class="fw-normal text-body-secondary small">(not tradable)</span></h3>
                 <dl class="stat-list">
-                    <div><dt>Disagreeing snapshots</dt><dd><?php echo home::Num($cvp['disagree_snapshots']); ?> <span class="text-body-secondary small">in <?php echo home::Num($cvp['disagree_markets']); ?> markets</span></dd></div>
-                    <div><dt>Crowd's pick won</dt><dd><?php echo home::Pct($cvp['crowd_win_rate']); ?></dd></div>
-                    <div><dt>Average price of crowd's pick</dt><dd><?php echo home::Cents($cvp['crowd_pick_price']); ?></dd></div>
-                    <div><dt>Edge (win rate − price)</dt><dd><?php echo home::Signed($edge_mid); ?></dd></div>
+                    <div><dt>Disagreeing snapshots</dt><dd><?php echo home::Num($cvp->disagree_snapshots); ?> <span class="text-body-secondary small">in <?php echo home::Num($cvp->disagree_markets); ?> markets</span></dd></div>
+                    <div><dt>Crowd's pick won</dt><dd><?php echo home::Pct($cvp->crowd_win_rate); ?></dd></div>
+                    <div><dt>Average price of crowd's pick</dt><dd><?php echo home::Cents($cvp->crowd_pick_price); ?></dd></div>
+                    <div><dt>Edge (win rate − price)</dt><dd><?php echo home::Signed($cvp->EdgeAtMid()); ?></dd></div>
                 </dl>
                 <hr>
                 <h3 class="h6 mb-2">All resolved snapshots</h3>
                 <dl class="stat-list">
-                    <div><dt>Head-count pick right</dt><dd><?php echo home::Pct($cvp['headcount_acc']); ?></dd></div>
-                    <div><dt>Shares pick right</dt><dd><?php echo home::Pct($cvp['shares_acc']); ?></dd></div>
-                    <div><dt>Price pick right</dt><dd><?php echo home::Pct($cvp['price_acc']); ?></dd></div>
-                    <div><dt>Base</dt><dd><?php echo home::Num($cvp['snapshots']); ?> snapshots, <?php echo home::Num($cvp['markets']); ?> markets</dd></div>
+                    <div><dt>Head-count pick right</dt><dd><?php echo home::Pct($cvp->headcount_acc); ?></dd></div>
+                    <div><dt>Shares pick right</dt><dd><?php echo home::Pct($cvp->shares_acc); ?></dd></div>
+                    <div><dt>Price pick right</dt><dd><?php echo home::Pct($cvp->price_acc); ?></dd></div>
+                    <div><dt>Base</dt><dd><?php echo home::Num($cvp->snapshots); ?> snapshots, <?php echo home::Num($cvp->markets); ?> markets</dd></div>
                 </dl>
             <?php } else { ?>
                 <div class="empty">Waiting for resolved markets.</div>
@@ -252,9 +251,7 @@ $chart_data = [
         Bought at the ask the moment the head count was known. Sold at the bid at the market's next count, or held until it settled (pays $1 or $0).
         Per share, before fees. Only counts with an order book (from migration 003 on); open markets count toward the next-count columns.
     </p>
-    <?php
-    $fw = array_column(array_map(static fn($r) => $r + ['key' => $r['disagree'] === null ? 'all' : ($r['disagree'] ? 'disagree' : 'agree')], home::$Forward), null, 'key');
-    if ($fw) { ?>
+    <?php if (home::$Forward) { ?>
         <div class="table-responsive">
             <table class="table table-sm table-numeric align-middle mb-0">
                 <thead>
@@ -271,20 +268,20 @@ $chart_data = [
                 </tr>
                 </thead>
                 <tbody>
-                <?php foreach (['disagree' => 'Crowd ≠ price favorite', 'agree' => 'Crowd = price favorite', 'all' => 'Every head-count pick'] as $key => $label) {
-                    $r = $fw[$key] ?? null;
+                <?php foreach (ForwardReturnDTO::LABELS as $key => $label) {
+                    $r = home::$Forward[$key] ?? null;
                     if (!$r) { continue; } ?>
                     <tr<?php echo $key === 'all' ? ' class="fw-semibold"' : ''; ?>>
                         <td><?php echo home::H($label); ?></td>
-                        <td><?php echo home::Num($r['entries']); ?> <span class="text-body-secondary small fw-normal">/ <?php echo home::Num($r['markets']); ?> mkts</span></td>
-                        <td><?php echo home::Cents($r['entry_ask']); ?></td>
-                        <td class="border-start"><?php echo home::Num($r['next_n']); ?></td>
-                        <td><?php echo $r['next_hours'] === null ? '–' : home::Num($r['next_hours'], 1) . ' h'; ?></td>
-                        <td><?php echo home::Signed($r['next_return']); ?></td>
-                        <td><?php echo home::Signed($r['next_roi'], 'pct'); ?></td>
-                        <td class="border-start"><?php echo home::Num($r['res_n']); ?></td>
-                        <td><?php echo home::Signed($r['res_return']); ?></td>
-                        <td><?php echo home::Signed($r['res_roi'], 'pct'); ?></td>
+                        <td><?php echo home::Num($r->entries); ?> <span class="text-body-secondary small fw-normal">/ <?php echo home::Num($r->markets); ?> mkts</span></td>
+                        <td><?php echo home::Cents($r->entry_ask); ?></td>
+                        <td class="border-start"><?php echo home::Num($r->next_n); ?></td>
+                        <td><?php echo $r->next_hours === null ? '–' : home::Num($r->next_hours, 1) . ' h'; ?></td>
+                        <td><?php echo home::Signed($r->next_return); ?></td>
+                        <td><?php echo home::Signed($r->next_roi, 'pct'); ?></td>
+                        <td class="border-start"><?php echo home::Num($r->res_n); ?></td>
+                        <td><?php echo home::Signed($r->res_return); ?></td>
+                        <td><?php echo home::Signed($r->res_roi, 'pct'); ?></td>
                     </tr>
                 <?php } ?>
                 </tbody>
@@ -310,37 +307,30 @@ $chart_data = [
                 </thead>
                 <tbody>
                 <?php foreach (home::$ClosingSoon as $m) {
-                    $o = array_column($m['outcome_rows'], null, 'outcome_index');
-                    $hp = $m['picks']['headcount'];
-                    $pp = $m['picks']['price'];
-                    $all = array_sum(array_column($m['outcome_rows'], 'holder_count'));
-                    $disagree = $hp !== null && $pp !== null && $hp !== $pp; ?>
+                    $head = $m->Outcome($m->head_pick);
+                    $fav = $m->Outcome($m->price_pick); ?>
                     <tr>
                         <td class="market-cell">
-                            <a href="<?php echo home::H(home::MarketURL($m)); ?>" target="_blank" rel="noopener"><?php echo home::H($m['question']); ?></a>
-                            <?php if ($disagree) { ?><span class="flag" title="The most-held side isn't the price favorite">crowd ≠ price</span><?php } ?>
+                            <a href="<?php echo home::H($m->Url()); ?>" target="_blank" rel="noopener"><?php echo home::H($m->question); ?></a>
+                            <?php if ($m->CrowdDisagrees()) { ?><span class="flag" title="The most-held side isn't the price favorite">crowd ≠ price</span><?php } ?>
                         </td>
-                        <td class="text-nowrap"><?php echo home::Time($m['end_date']); ?><div class="small text-body-secondary"><?php echo home::H(home::Ago(strtotime($m['end_date'] . ' UTC'))); ?></div></td>
-                        <td class="text-end"><?php echo home::Money($m['volume_num']); ?></td>
-                        <td class="text-end"><?php echo $m['snapshot'] ? home::Num($m['snapshot']['unique_holders']) : '–'; ?></td>
+                        <td class="text-nowrap"><?php echo home::Time($m->end_date); ?><div class="small text-body-secondary"><?php echo home::H(home::Ago(strtotime($m->end_date . ' UTC'))); ?></div></td>
+                        <td class="text-end"><?php echo home::Money($m->volume_num); ?></td>
+                        <td class="text-end"><?php echo $m->snapshot_id ? home::Num($m->unique_holders) : '–'; ?></td>
                         <td class="text-nowrap">
-                            <?php if ($m['snapshot']) { ?>
-                                <?php echo home::H(home::OutcomeLabel($m, $hp)); ?>
-                                <?php if ($hp !== null && $all > 0) { ?><span class="text-body-secondary small"><?php echo home::Pct($o[$hp]['holder_count'] / $all); ?></span><?php } ?>
-                                <?php if ($hp !== null && $o[$hp]['book_ask'] !== null) { ?><div class="small text-body-secondary">ask <?php echo home::Cents($o[$hp]['book_ask']); ?></div><?php } ?>
+                            <?php if ($m->snapshot_id) { ?>
+                                <?php echo home::H($m->OutcomeLabel($m->head_pick)); ?>
+                                <?php if ($m->HeadShare() !== null) { ?><span class="text-body-secondary small"><?php echo home::Pct($m->HeadShare()); ?></span><?php } ?>
+                                <?php if ($head?->book_ask !== null) { ?><div class="small text-body-secondary">ask <?php echo home::Cents($head->book_ask); ?></div><?php } ?>
                             <?php } else { ?>–<?php } ?>
                         </td>
                         <td class="text-nowrap">
-                            <?php if ($m['snapshot']) { ?>
-                                <?php echo home::H(home::OutcomeLabel($m, $pp)); ?>
-                                <?php if ($pp !== null) {
-                                    $mid = $o[$pp]['book_bid'] !== null && $o[$pp]['book_ask'] !== null
-                                        ? ((float)$o[$pp]['book_bid'] + (float)$o[$pp]['book_ask']) / 2 : $o[$pp]['price']; ?>
-                                    <span class="text-body-secondary small"><?php echo home::Cents($mid); ?></span>
-                                <?php } ?>
+                            <?php if ($m->snapshot_id) { ?>
+                                <?php echo home::H($m->OutcomeLabel($m->price_pick)); ?>
+                                <?php if ($fav) { ?><span class="text-body-secondary small"><?php echo home::Cents($fav->Mid()); ?></span><?php } ?>
                             <?php } else { ?>–<?php } ?>
                         </td>
-                        <td class="text-nowrap small"><?php echo $m['snapshot'] ? home::H(home::Ago(strtotime($m['snapshot']['captured_at'] . ' UTC'))) : 'never'; ?></td>
+                        <td class="text-nowrap small"><?php echo $m->snapshot_id ? home::H(home::Ago(strtotime($m->captured_at . ' UTC'))) : 'never'; ?></td>
                     </tr>
                 <?php } ?>
                 </tbody>
@@ -366,23 +356,21 @@ $chart_data = [
                 </thead>
                 <tbody>
                 <?php foreach (home::$Resolved as $m) {
-                    $win = (int)$m['winning_outcome_index'];
-                    $has = (bool)$m['snapshot']; ?>
+                    $win = (int)$m->winning_outcome_index; ?>
                     <tr>
-                        <td class="market-cell"><a href="<?php echo home::H(home::MarketURL($m)); ?>" target="_blank" rel="noopener"><?php echo home::H($m['question']); ?></a></td>
-                        <td class="text-nowrap"><?php echo home::Time($m['closed_time'] ?? $m['end_date']); ?></td>
-                        <td><strong><?php echo home::H($m['winning_outcome'] ?? home::OutcomeLabel($m, $win)); ?></strong></td>
+                        <td class="market-cell"><a href="<?php echo home::H($m->Url()); ?>" target="_blank" rel="noopener"><?php echo home::H($m->question); ?></a></td>
+                        <td class="text-nowrap"><?php echo home::Time($m->closed_time ?? $m->end_date); ?></td>
+                        <td><strong><?php echo home::H($m->winning_outcome ?? $m->OutcomeLabel($win)); ?></strong></td>
                         <td class="text-nowrap small">
-                            <?php if ($has) {
-                                $before = strtotime(($m['closed_time'] ?? $m['end_date']) . ' UTC') - strtotime($m['snapshot']['captured_at'] . ' UTC');
+                            <?php if ($m->snapshot_id) {
+                                $before = strtotime(($m->closed_time ?? $m->end_date) . ' UTC') - strtotime($m->captured_at . ' UTC');
                                 echo home::H(home::Duration(max(0, $before))) . ' before close';
                             } else { ?>no complete count<?php } ?>
                         </td>
-                        <?php foreach (['headcount', 'shares', 'price'] as $kind) { ?>
+                        <?php foreach ([$m->head_pick, $m->share_pick, $m->price_pick] as $p) { ?>
                             <td class="text-nowrap">
-                                <?php if ($has) {
-                                    $p = $m['picks'][$kind];
-                                    echo home::H(home::OutcomeLabel($m, $p)) . ' ' . home::Verdict($p === null ? null : $p === $win);
+                                <?php if ($m->snapshot_id) {
+                                    echo home::H($m->OutcomeLabel($p)) . ' ' . home::Verdict($p === null ? null : $p === $win);
                                 } else { ?>–<?php } ?>
                             </td>
                         <?php } ?>
@@ -411,14 +399,14 @@ $chart_data = [
                         <tbody>
                         <?php foreach (home::$Tags as $tag) { ?>
                             <tr>
-                                <td><?php echo home::H($tag['tag']); ?></td>
-                                <td><?php echo home::Num($tag['markets']); ?></td>
-                                <td><?php echo home::Num($tag['open_markets']); ?></td>
-                                <td><?php echo home::Num($tag['resolved']); ?></td>
-                                <td><?php echo home::Num($tag['snapshots']); ?></td>
-                                <td><?php echo home::Money($tag['volume']); ?></td>
-                                <td><?php echo home::Pct($tag['headcount_acc']); ?></td>
-                                <td><?php echo home::Pct($tag['price_acc']); ?></td>
+                                <td><?php echo home::H($tag->tag); ?></td>
+                                <td><?php echo home::Num($tag->markets); ?></td>
+                                <td><?php echo home::Num($tag->open_markets); ?></td>
+                                <td><?php echo home::Num($tag->resolved); ?></td>
+                                <td><?php echo home::Num($tag->snapshots); ?></td>
+                                <td><?php echo home::Money($tag->volume); ?></td>
+                                <td><?php echo home::Pct($tag->headcount_acc); ?></td>
+                                <td><?php echo home::Pct($tag->price_acc); ?></td>
                             </tr>
                         <?php } ?>
                         </tbody>
@@ -439,9 +427,9 @@ $chart_data = [
                     <tbody>
                     <?php foreach (home::$Tables as $tb) { ?>
                         <tr>
-                            <td><code><?php echo home::H($tb['name']); ?></code><?php if ($tb['type'] === 'VIEW') { ?> <span class="text-body-secondary small">view</span><?php } ?></td>
-                            <td><?php echo $tb['type'] === 'VIEW' ? '–' : home::Num($tb['approx_rows']); ?></td>
-                            <td><?php echo $tb['type'] === 'VIEW' ? '–' : home::Bytes($tb['bytes']); ?></td>
+                            <td><code><?php echo home::H($tb->name); ?></code><?php if ($tb->type === 'VIEW') { ?> <span class="text-body-secondary small">view</span><?php } ?></td>
+                            <td><?php echo $tb->type === 'VIEW' ? '–' : home::Num($tb->approx_rows); ?></td>
+                            <td><?php echo $tb->type === 'VIEW' ? '–' : home::Bytes($tb->bytes); ?></td>
                         </tr>
                     <?php } ?>
                     </tbody>
@@ -464,16 +452,16 @@ $chart_data = [
                 <tbody>
                 <?php foreach (array_slice(home::$Runs, 0, 24) as $r) { ?>
                     <tr>
-                        <td>#<?php echo (int)$r['id']; ?></td>
-                        <td><?php echo home::Time($r['started_at']); ?></td>
-                        <td><?php echo home::StatusBadge($r['status']); ?><?php if ($r['notes']) { ?> <span class="text-body-secondary small" title="<?php echo home::H($r['notes']); ?>">ⓘ</span><?php } ?></td>
-                        <td><?php echo home::Duration($r['seconds']); ?></td>
-                        <td><?php echo home::Num($r['discovered']); ?></td>
-                        <td><?php echo home::Num($r['resolved']); ?></td>
-                        <td><?php echo home::Num($r['snapshots']); ?></td>
-                        <td><?php echo home::Num($r['due_remaining']); ?></td>
-                        <td><?php echo home::Num($r['requests']); ?></td>
-                        <td><?php echo (int)$r['http_errors'] ? '<strong>' . home::Num($r['http_errors']) . '</strong>' : '0'; ?></td>
+                        <td>#<?php echo (int)$r->id; ?></td>
+                        <td><?php echo home::Time($r->started_at); ?></td>
+                        <td><?php echo home::StatusBadge($r->status); ?><?php if ($r->notes) { ?> <span class="text-body-secondary small" title="<?php echo home::H($r->notes); ?>">ⓘ</span><?php } ?></td>
+                        <td><?php echo home::Duration($r->seconds); ?></td>
+                        <td><?php echo home::Num($r->discovered); ?></td>
+                        <td><?php echo home::Num($r->resolved); ?></td>
+                        <td><?php echo home::Num($r->snapshots); ?></td>
+                        <td><?php echo home::Num($r->due_remaining); ?></td>
+                        <td><?php echo home::Num($r->requests); ?></td>
+                        <td><?php echo (int)$r->http_errors ? '<strong>' . home::Num($r->http_errors) . '</strong>' : '0'; ?></td>
                     </tr>
                 <?php } ?>
                 </tbody>
