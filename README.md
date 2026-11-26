@@ -134,7 +134,7 @@ To add a dashboard section:
 3. Rebuild it from the cache in `pages/home/home.php`.
 4. Show it in `home.html.php`.
 
-QuickDRY quotes every parameter, so a `LIMIT` has to be written into the SQL itself. Don't use `APIHelper::ApplyArray()` for IN lists on MySQL: its `@name` placeholders are added after `getSQL()` has already converted `@` to `:`, so they're never filled in. The query then runs against empty user variables and silently returns nothing. Use a subquery instead (see `common/Poly/sql/picks_latest_before.sql`).
+QuickDRY quotes every parameter, so a `LIMIT` has to be written into the SQL itself. For IN lists, `APIHelper::ApplyArray()` works on MySQL only with QuickDRY9 [PR #19](https://github.com/BenKucenski/QuickDRY9/pull/19) or later. Before that, it wrote `@name` placeholders that MySQL never fills in, so the IN list silently matched nothing. These reports use a subquery instead (see `common/Poly/sql/picks_latest_before.sql`), which works with either version.
 
 Ad-hoc questions are easiest against `snapshot_pick` joined to `market`. A pick is NULL on a tie, so `p.head_pick = m.winning_outcome_index` is 1, 0 or NULL, and `AVG()` skips the NULLs.
 
