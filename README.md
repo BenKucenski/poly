@@ -14,6 +14,16 @@ Built on [QuickDRY9](https://github.com/BenKucenski/QuickDRY9). Requests go thro
 3. Copy `env.sample.php` to `env.php` and set `DATA_FOLDER` and the MySQL credentials. `DATA_FOLDER` must already exist and be writable.
 4. Test it with a short run: `php tasks/collect.php -m300` (stops after 5 minutes).
 
+## Dashboard
+
+The homepage (`pages/home`) is a read-only dashboard of what's in the database: headline counts, snapshots per run, open markets by schedule band, how often the head-count / shares / price picks named the winner by days before close, the crowd-vs-price disagreement, markets closing soonest, recently resolved markets, top tags, table sizes and the recent `run_log`. The queries are in `common/Poly/Dashboard.php`, and the layout is `masterpages/main.php`. Bootstrap and Chart.js load from jsDelivr. If the CDN is unreachable, the tables still show every number.
+
+- **IIS:** rename `web.config.sample.txt` to `web.config` and point the site at the project folder.
+- **Apache:** the included `.htaccess` routes everything through `index.php`.
+- **Local:** `php -S localhost:8000 index.php`, then open http://localhost:8000.
+
+The dashboard has no sign-in. Put it behind your own access control (Cloudflare Access, IIS authentication, a VPN) before it's reachable from the internet. The accuracy panels only read resolved markets' snapshots, so they stay quick as open markets pile up. On a large `snapshot` table, still expect the first load after a run to take a moment.
+
 ## Scheduling
 
 The script stops starting new work after `POLY_MAX_RUNTIME_SECONDS` (54 minutes by default). A lock file in `DATA_FOLDER` makes a new run exit at once if the previous one is still going. Also set a hard 55-minute kill in the scheduler as a backstop.
