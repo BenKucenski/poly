@@ -9,6 +9,9 @@ use Throwable;
 
 /**
  * Homepage dashboard: what the collector has gathered so far.
+ *
+ * Reads precomputed sections from dashboard_cache (written by
+ * tasks/dashboard.php), so a page view runs no heavy queries.
  */
 class home extends BasePage
 {
@@ -22,6 +25,15 @@ class home extends BasePage
     public static array $Resolved = [];
     public static array $Tables = [];
     public static ?string $DBError = null;
+
+    /** Whether tasks/dashboard.php has stored anything yet. */
+    public static bool $HasCache = false;
+    /** The oldest section's build time (UTC), i.e. how fresh the page is at worst. */
+    public static ?string $BuiltAt = null;
+    /** Total query time of the stored build, in milliseconds. */
+    public static int $BuildMs = 0;
+    /** Sections whose last rebuild failed (name => error); they show their previous data. */
+    public static array $StaleSections = [];
 
     /**
      * @return void
@@ -42,18 +54,40 @@ class home extends BasePage
             return;
         }
         try {
-            self::$Totals = Dashboard::Totals();
-            self::$Runs = Dashboard::Runs(72);
-            self::$Cadence = Dashboard::Cadence();
-            self::$Accuracy = Dashboard::AccuracyByDaysOut();
-            self::$CrowdVsPrice = Dashboard::CrowdVsPrice();
-            self::$Tags = Dashboard::Tags(20);
-            self::$ClosingSoon = Dashboard::ClosingSoon(12);
-            self::$Resolved = Dashboard::RecentlyResolved(12);
-            self::$Tables = Dashboard::TableSizes();
+            $cache = Dashboard::Load();
         } catch (Throwable $e) {
             self::$DBError = $e->getMessage();
+            return;
         }
+
+        $map = [
+            'totals'       => 'Totals',
+            'runs'         => 'Runs',
+            'cadence'      => 'Cadence',
+            'accuracy'     => 'Accuracy',
+            'crowd'        => 'CrowdVsPrice',
+            'tags'         => 'Tags',
+            'closing_soon' => 'ClosingSoon',
+            'resolved'     => 'Resolved',
+            'tables'       => 'Tables',
+        ];
+        foreach ($map as $name => $prop) {
+            $section = $cache[$name] ?? null;
+            if (!$section) {
+                continue;
+            }
+            if (is_array($section['data'])) {
+                self::${$prop} = $section['data'];
+            }
+            if ($section['error']) {
+                self::$StaleSections[$name] = $section['error'];
+            }
+            if ($section['built_at'] && (!self::$BuiltAt || $section['built_at'] < self::$BuiltAt)) {
+                self::$BuiltAt = $section['built_at'];
+            }
+            self::$BuildMs += $section['build_ms'];
+        }
+        self::$HasCache = self::$BuiltAt !== null;
     }
 
     // ------------------------------------------------------------ view helpers

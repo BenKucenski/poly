@@ -13,16 +13,29 @@ Built on [QuickDRY9](https://github.com/BenKucenski/QuickDRY9). Requests go thro
 2. Create the database: `mysql -u root -p < sql/schema.sql`
 3. Copy `env.sample.php` to `env.php` and set `DATA_FOLDER` and the MySQL credentials. `DATA_FOLDER` must already exist and be writable.
 4. Test it with a short run: `php tasks/collect.php -m300` (stops after 5 minutes).
+5. Build the dashboard: `php tasks/dashboard.php`.
 
 ## Dashboard
 
-The homepage (`pages/home`) is a read-only dashboard of what's in the database: headline counts, snapshots per run, open markets by schedule band, how often the head-count / shares / price picks named the winner by days before close, the crowd-vs-price disagreement, markets closing soonest, recently resolved markets, top tags, table sizes and the recent `run_log`. The queries are in `common/Poly/Dashboard.php`, and the layout is `masterpages/main.php`. Bootstrap and Chart.js load from jsDelivr. If the CDN is unreachable, the tables still show every number.
+The homepage (`pages/home`) is a read-only dashboard of what's in the database: headline counts, snapshots per run, open markets by schedule band, how often the head-count / shares / price picks named the winner by days before close, the crowd-vs-price disagreement, markets closing soonest, recently resolved markets, top tags, table sizes and the recent `run_log`. The layout is `masterpages/main.php`.
+
+The page doesn't query the collected data itself. `tasks/dashboard.php` runs every dashboard query (`common/Poly/Dashboard.php`) and stores each section's results as JSON in `dashboard_cache`. A page view reads only that table, and the header shows when the numbers were computed. If a section fails to rebuild, it keeps its previous numbers, and the page lists the error above them.
+
+```
+php tasks/dashboard.php                  rebuild every section
+php tasks/dashboard.php -q               quiet (errors only; exit code 1 if a section failed)
+php tasks/dashboard.php -stotals,runs    rebuild only these sections
+```
+
+Sections: `totals`, `runs`, `cadence`, `accuracy`, `crowd`, `tags`, `closing_soon`, `resolved`, `tables`.
+
+Bootstrap and Chart.js load from jsDelivr. If the CDN is unreachable, the tables still show every number.
 
 - **IIS:** rename `web.config.sample.txt` to `web.config` and point the site at the project folder.
 - **Apache:** the included `.htaccess` routes everything through `index.php`.
 - **Local:** `php -S localhost:8000 index.php`, then open http://localhost:8000.
 
-The dashboard has no sign-in. Put it behind your own access control (Cloudflare Access, IIS authentication, a VPN) before it's reachable from the internet. The accuracy panels only read resolved markets' snapshots, so they stay quick as open markets pile up. On a large `snapshot` table, still expect the first load after a run to take a moment.
+The dashboard has no sign-in. Put it behind your own access control (Cloudflare Access, IIS authentication, a VPN) before it's reachable from the internet.
 
 ## Scheduling
 
@@ -43,7 +56,24 @@ Register-ScheduledTask -TaskName "Poly Collector" -Action $a -Trigger $t -Settin
 0 * * * * cd /var/www/poly && timeout 55m php tasks/collect.php -q
 ```
 
-Each run writes a row to `run_log`, with snapshot counts, request counts, errors and how many markets were still due when it stopped. If `due_remaining` stays high, the collector can't keep up: raise `POLY_MIN_VOLUME` or lower `POLY_MAX_HOLDER_PAGES`.
+Schedule `tasks/dashboard.php` separately, every 15 minutes. It runs its own lock, so it never overlaps itself, and it's read-only, so it can run while the collector writes. The dashboard is then at most 15 minutes behind the data.
+
+**Windows:**
+
+```powershell
+$a = New-ScheduledTaskAction -Execute "C:\php\php.exe" -Argument "tasks\dashboard.php -q" -WorkingDirectory "C:\sites\poly"
+$t = New-ScheduledTaskTrigger -Once -At (Get-Date -Minute 0 -Second 0) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 14) -MultipleInstances IgnoreNew -StartWhenAvailable
+Register-ScheduledTask -TaskName "Poly Dashboard" -Action $a -Trigger $t -Settings $s -User "SYSTEM"
+```
+
+**Linux:**
+
+```
+*/15 * * * * cd /var/www/poly && timeout 14m php tasks/dashboard.php -q
+```
+
+Each collector run writes a row to `run_log`, with snapshot counts, request counts, errors and how many markets were still due when it stopped. If `due_remaining` stays high, the collector can't keep up: raise `POLY_MIN_VOLUME` or lower `POLY_MAX_HOLDER_PAGES`.
 
 ## What a run does
 
@@ -71,6 +101,7 @@ Every row has its capture timestamp, so you can bucket by time later.
 - `snapshot`: one row per count. `captured_at`, `seconds_to_end`, `unique_holders`, `multi_side_holders` (wallets holding more than one outcome), volume and best bid/ask. `is_complete = 0` means the page cap or time budget cut the walk short. `error` is set if the walk failed.
 - `snapshot_outcome`: per outcome, `price`, `holder_count`, `total_shares`, wallets at 10/100/1,000/10,000+ shares, shares held by the top 10 wallets, and the largest wallet's holding.
 - `snapshot_holder`: per-wallet rows, only when `POLY_STORE_HOLDER_ROWS` is not 0.
+- `dashboard_cache`: one row per dashboard section, holding its JSON, when it was built, how long it took, and the last rebuild error, if any. Written by `tasks/dashboard.php`.
 - `v_snapshot_vs_result`: for each snapshot, the head-count pick, the shares pick and the price pick next to the winner, with `*_correct` flags and `crowd_disagrees_with_price`.
 
 ## Starter queries
@@ -120,6 +151,7 @@ ORDER BY markets DESC;
 ## Upgrading an existing database
 
 - `sql/migrations/001_market_tag.sql` adds `market_tag` and fills it from `market.tags`. It is safe to run more than once.
+- `sql/migrations/002_dashboard_cache.sql` adds `dashboard_cache`. Then run `php tasks/dashboard.php` once. Until you do, the homepage asks you to.
 
 ## Things to keep in mind
 
