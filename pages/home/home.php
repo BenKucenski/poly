@@ -4,26 +4,45 @@ declare(strict_types=1);
 namespace pages\home;
 
 use common\Poly\Dashboard;
+use models\reports\AccuracyByDaysOutDTO;
+use models\reports\CadenceDTO;
+use models\reports\CrowdVsPriceDTO;
+use models\reports\DashboardCacheDTO;
+use models\reports\DashboardTotalsDTO;
+use models\reports\ForwardReturnDTO;
+use models\reports\LatestCountDTO;
+use models\reports\RunLogDTO;
+use models\reports\TableSizeDTO;
+use models\reports\TagDTO;
 use QuickDRY\Web\BasePage;
 use Throwable;
 
 /**
  * Homepage dashboard: what the collector has gathered so far.
  *
- * Reads precomputed sections from dashboard_cache (written by
- * tasks/dashboard.php), so a page view runs no heavy queries.
+ * Reads the report objects tasks/dashboard.php stored in dashboard_cache
+ * (see common\Poly\Dashboard) and turns them back into the same strongType
+ * DTOs, so a page view runs no heavy queries.
  */
 class home extends BasePage
 {
-    public static array $Totals = [];
+    public static ?DashboardTotalsDTO $Totals = null;
+    /** @var RunLogDTO[] newest first */
     public static array $Runs = [];
+    /** @var CadenceDTO[] */
     public static array $Cadence = [];
+    /** @var AccuracyByDaysOutDTO[] */
     public static array $Accuracy = [];
-    public static array $CrowdVsPrice = [];
+    public static ?CrowdVsPriceDTO $CrowdVsPrice = null;
+    /** @var array<string, ForwardReturnDTO> keyed 'disagree', 'agree', 'all' */
     public static array $Forward = [];
+    /** @var TagDTO[] */
     public static array $Tags = [];
+    /** @var LatestCountDTO[] */
     public static array $ClosingSoon = [];
+    /** @var LatestCountDTO[] */
     public static array $Resolved = [];
+    /** @var TableSizeDTO[] */
     public static array $Tables = [];
     public static ?string $DBError = null;
 
@@ -55,39 +74,41 @@ class home extends BasePage
             return;
         }
         try {
-            $cache = Dashboard::Load();
+            $cache = DashboardCacheDTO::getReport();
         } catch (Throwable $e) {
             self::$DBError = $e->getMessage();
             return;
         }
 
-        $map = [
-            'totals'       => 'Totals',
-            'runs'         => 'Runs',
-            'cadence'      => 'Cadence',
-            'accuracy'     => 'Accuracy',
-            'crowd'        => 'CrowdVsPrice',
-            'forward'      => 'Forward',
-            'tags'         => 'Tags',
-            'closing_soon' => 'ClosingSoon',
-            'resolved'     => 'Resolved',
-            'tables'       => 'Tables',
-        ];
-        foreach ($map as $name => $prop) {
-            $section = $cache[$name] ?? null;
-            if (!$section) {
+        foreach ($cache as $name => $section) {
+            if (!isset(Dashboard::Sections()[$name])) {
+                continue; // a section this version no longer builds
+            }
+            if ($section->error) {
+                self::$StaleSections[$name] = $section->error;
+            }
+            if ($section->built_at && (!self::$BuiltAt || $section->built_at < self::$BuiltAt)) {
+                self::$BuiltAt = $section->built_at;
+            }
+            self::$BuildMs += (int)$section->build_ms;
+
+            $data = $section->Data();
+            if (!is_array($data)) {
                 continue;
             }
-            if (is_array($section['data'])) {
-                self::${$prop} = $section['data'];
-            }
-            if ($section['error']) {
-                self::$StaleSections[$name] = $section['error'];
-            }
-            if ($section['built_at'] && (!self::$BuiltAt || $section['built_at'] < self::$BuiltAt)) {
-                self::$BuiltAt = $section['built_at'];
-            }
-            self::$BuildMs += $section['build_ms'];
+            $list = static fn(string $class) => array_map(static fn($row) => new $class($row), $data);
+            match ($name) {
+                'totals'       => self::$Totals = new DashboardTotalsDTO($data),
+                'runs'         => self::$Runs = $list(RunLogDTO::class),
+                'cadence'      => self::$Cadence = $list(CadenceDTO::class),
+                'accuracy'     => self::$Accuracy = $list(AccuracyByDaysOutDTO::class),
+                'crowd'        => self::$CrowdVsPrice = new CrowdVsPriceDTO($data),
+                'forward'      => self::$Forward = $list(ForwardReturnDTO::class),
+                'tags'         => self::$Tags = $list(TagDTO::class),
+                'closing_soon' => self::$ClosingSoon = array_map(static fn($row) => LatestCountDTO::fromCache($row), $data),
+                'resolved'     => self::$Resolved = array_map(static fn($row) => LatestCountDTO::fromCache($row), $data),
+                'tables'       => self::$Tables = $list(TableSizeDTO::class),
+            };
         }
         self::$HasCache = self::$BuiltAt !== null;
     }
@@ -274,29 +295,5 @@ class home extends BasePage
             : '<span class="status status-critical"><span aria-hidden="true">✕</span> wrong</span>';
     }
 
-    /**
-     * @param array $market a market row (needs outcomes)
-     * @param int|null $index
-     * @return string label
-     */
-    public static function OutcomeLabel(array $market, ?int $index): string
-    {
-        if ($index === null) {
-            return 'tie';
-        }
-        $labels = json_decode((string)($market['outcomes'] ?? ''), true);
-        return is_array($labels) && isset($labels[$index]) ? (string)$labels[$index] : '#' . $index;
-    }
 
-    /**
-     * @param array $market
-     * @return string Polymarket URL
-     */
-    public static function MarketURL(array $market): string
-    {
-        if (!empty($market['event_slug'])) {
-            return 'https://polymarket.com/event/' . rawurlencode($market['event_slug']);
-        }
-        return 'https://polymarket.com/market/' . rawurlencode((string)($market['slug'] ?? ''));
-    }
 }

@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 namespace common\Poly;
 
+use QuickDRY\Connectors\mysql\MySQL_A;
+use QuickDRY\Utilities\APIHelper;
+
 /**
  * Keeps snapshot_pick up to date: each error-free snapshot's picks, worked
  * out once, plus the bid for its head-count pick at the market's next count.
@@ -18,13 +21,15 @@ namespace common\Poly;
  * snapshot_pick, which nothing else writes. No INSERT ... SELECT from the
  * collector's tables: that would lock the rows it reads, and the collector
  * could wait on it.
+ *
+ * The reads are SQL files in sql/, loaded with QuickDRY's APIHelper.
  */
 class Picks
 {
     /** collector_state key: highest snapshot id already handled. */
     public const string STATE = 'picks_last_snapshot_id';
 
-    /** Snapshots per batch. */
+    /** Snapshots per batch (also the LIMIT in sql/picks_snapshots.sql). */
     public const int BATCH = 5000;
 
     /**
@@ -84,12 +89,7 @@ class Picks
      */
     private static function Batch(int $after): array
     {
-        $snaps = Store::Rows('
-SELECT id, condition_id, captured_at, completed_at, is_complete, error
-FROM snapshot
-WHERE id > :after_id
-ORDER BY id
-LIMIT ' . self::BATCH, ['after_id' => $after]);
+        $snaps = MySQL_A::QueryMap(APIHelper::getSQL(__DIR__ . '/sql/picks_snapshots.sql'), ['after_id' => $after], fn($row) => $row);
 
         if (!$snaps) {
             return [0, 0, $after, false];
@@ -99,18 +99,16 @@ LIMIT ' . self::BATCH, ['after_id' => $after]);
         $max = (int)$snaps[count($snaps) - 1]['id'];
 
         $outcomes = [];
-        foreach (Store::Rows('
-SELECT snapshot_id, outcome_index, price, holder_count, total_shares, book_bid, book_ask
-FROM snapshot_outcome
-WHERE snapshot_id BETWEEN :first_id AND :max_id
-ORDER BY snapshot_id, outcome_index
-', ['first_id' => $first, 'max_id' => $max]) as $o) {
+        $range = ['first_id' => $first, 'last_id' => $max];
+        foreach (MySQL_A::QueryMap(APIHelper::getSQL(__DIR__ . '/sql/picks_outcomes.sql'), $range, fn($row) => $row) as $o) {
             $outcomes[(int)$o['snapshot_id']][] = $o;
         }
 
         // Each market's latest pick from before this batch, to link forward.
-        $cids = array_values(array_unique(array_column($snaps, 'condition_id')));
-        $prev = self::LatestBefore($cids, $first);
+        $prev = [];
+        foreach (MySQL_A::QueryMap(APIHelper::getSQL(__DIR__ . '/sql/picks_latest_before.sql'), $range, fn($row) => $row) as $r) {
+            $prev[$r['condition_id']] = $r;
+        }
 
         $rows = [];      // snapshot_id => pick row to write
         $handled = 0;
@@ -178,39 +176,7 @@ ORDER BY snapshot_id, outcome_index
     }
 
     /**
-     * Each market's most recent pick row with a snapshot id below $before.
-     *
-     * @param string[] $condition_ids
-     * @param int $before
-     * @return array<string, array> keyed by condition_id
-     */
-    private static function LatestBefore(array $condition_ids, int $before): array
-    {
-        $out = [];
-        foreach (array_chunk($condition_ids, 500) as $chunk) {
-            $params = ['before_id' => $before];
-            $ph = [];
-            foreach ($chunk as $i => $cid) {
-                $ph[] = ':cid' . $i;
-                $params['cid' . $i] = $cid;
-            }
-            foreach (Store::Rows('
-SELECT p.*
-FROM snapshot_pick p
-         JOIN (SELECT condition_id, MAX(snapshot_id) AS snapshot_id
-               FROM snapshot_pick
-               WHERE condition_id IN (' . implode(', ', $ph) . ') AND snapshot_id < :before_id
-               GROUP BY condition_id) l ON l.snapshot_id = p.snapshot_id
-', $params) as $r) {
-                $out[$r['condition_id']] = $r;
-            }
-        }
-        return $out;
-    }
-
-    /**
-     * The picks for one snapshot's outcome rows, matching v_snapshot_vs_result:
-     * most holders, most shares, highest price (order-book midpoint when both
+     * The picks for one snapshot's outcome rows: most holders, most shares, highest price (order-book midpoint when both
      * sides were recorded, else the Gamma price); NULL when two outcomes tie
      * for first.
      *

@@ -20,7 +20,7 @@ Built on [QuickDRY9](https://github.com/BenKucenski/QuickDRY9). Requests go thro
 
 The homepage (`pages/home`) is a read-only dashboard of what's in the database: headline counts, snapshots per run, open markets by schedule band, how often the head-count / shares / price picks named the winner by days before close, the crowd-vs-price disagreement (at the midpoint and at the ask you could have bought at), what buying the crowd's pick when each count finished would have returned by the next count and by resolution, markets closing soonest, recently resolved markets, top tags, table sizes and the recent `run_log`. The layout is `masterpages/main.php`.
 
-The page doesn't query the collected data itself. `tasks/dashboard.php` runs every dashboard query (`common/Poly/Dashboard.php`) and stores each section's results as JSON in `dashboard_cache`. A page view reads only that table, and the header shows when the numbers were computed. If a section fails to rebuild, it keeps its previous numbers, and the page lists the error above them.
+The page doesn't query the collected data itself. `tasks/dashboard.php` runs every dashboard report (see Reports below) and stores each section's report objects as JSON in `dashboard_cache`. A page view reads only that table, turns the JSON back into the same report objects, and the header shows when the numbers were computed. If a section fails to rebuild, it keeps its previous numbers, and the page lists the error above them.
 
 Each build first brings `snapshot_pick` up to date, which holds each snapshot's picks: most holders, most shares, highest price. Each snapshot is processed once, so a build only handles what the collector added since the last one. The accuracy, crowd, tag and forward-return numbers are then plain aggregates over that table. On a 450,000-snapshot test database, a normal build takes about 3 seconds instead of about 65. The first build after migration 004 back-fills the history. That took 81 seconds for 450,000 snapshots in testing, and a longer back-fill stops after 10 minutes and continues on the next run. The build only reads the collector's tables, with plain `SELECT`s that take no locks, and writes only `snapshot_pick` and `dashboard_cache`.
 
@@ -106,63 +106,69 @@ Every row has its capture timestamp, so you can bucket by time later.
 - `snapshot_holder`: per-wallet rows, only when `POLY_STORE_HOLDER_ROWS` is not 0.
 - `snapshot_pick`: one row per error-free snapshot, with the head-count, shares and price picks worked out once, what buying the head-count pick cost, and the bid for that outcome at the market's next count. Written by `tasks/dashboard.php`. It's safe to `TRUNCATE`, as long as you also delete the `picks_last_snapshot_id` row from `collector_state`; the next build refills it.
 - `dashboard_cache`: one row per dashboard section, holding its JSON, when it was built, how long it took, and the last rebuild error, if any. Written by `tasks/dashboard.php`.
-- `v_snapshot_vs_result`: for each snapshot, the head-count pick, the shares pick and the price pick next to the winner, with `*_correct` flags and `crowd_disagrees_with_price`. The view is timed at `signal_at` (`completed_at`, or `captured_at` on older rows). The price pick and `headcount_pick_price` use the order-book midpoint at that moment, falling back to `price` on older rows. `headcount_pick_ask` is what buying the crowd's pick cost then, and `has_book` says whether the snapshot has order-book data.
+There are no views. Reports are SQL files read through QuickDRY (see Reports), and the per-snapshot picks a view would recompute on every query are stored once in `snapshot_pick`.
 
-## Starter queries
+## Reports
 
-How often each kind of "majority" picked the winner, by days before close (binary markets, complete counts only):
+Every report follows the same pattern, QuickDRY's `APIHelper` plus `strongType`:
+
+- The SQL is a file in `models/reports/sql/`. Its header comment says what each column means and which `@parameters` it takes. Written with `@name`, it runs as-is in MySQL Workbench.
+- A DTO in `models/reports/` (`…DTO extends strongType`) has a typed property per column, and a static `getReport()` that loads the file with `APIHelper::getSQL()` and maps each row to an object with `MySQL_A::QueryMap()`.
+
+| Report | SQL | Used for |
+| --- | --- | --- |
+| `DashboardTotalsDTO` | `dashboard_totals.sql` | headline tiles |
+| `RunLogDTO` | `run_log.sql` | runs chart and table |
+| `CadenceDTO` | `cadence.sql` | open markets by schedule band |
+| `AccuracyByDaysOutDTO` | `accuracy_by_days_out.sql` | pick accuracy by days before close |
+| `CrowdVsPriceDTO` | `crowd_vs_price.sql` | crowd vs price, at the midpoint and at the ask |
+| `ForwardReturnDTO` | `forward_returns.sql` | returns from buying the crowd's pick |
+| `TagDTO` | `tags.sql` | top tags |
+| `LatestCountDTO` + `OutcomeDTO` | `closing_soon.sql`, `recently_resolved.sql` | market tables |
+| `TableSizeDTO` | `table_sizes.sql` | database sizes |
+| `DashboardCacheDTO` | `dashboard_cache.sql` | what the homepage reads |
+
+To add a dashboard section:
+1. Write the SQL file and its DTO.
+2. Add it to `Dashboard::Sections()`.
+3. Rebuild it from the cache in `pages/home/home.php`.
+4. Show it in `home.html.php`.
+
+QuickDRY quotes every parameter, so a `LIMIT` has to be written into the SQL itself. Don't use `APIHelper::ApplyArray()` for IN lists on MySQL: its `@name` placeholders are added after `getSQL()` has already converted `@` to `:`, so they're never filled in. The query then runs against empty user variables and silently returns nothing. Use a subquery instead (see `common/Poly/sql/picks_latest_before.sql`).
+
+Ad-hoc questions are easiest against `snapshot_pick` joined to `market`. A pick is NULL on a tie, so `p.head_pick = m.winning_outcome_index` is 1, 0 or NULL, and `AVG()` skips the NULLs.
+
+When the most-held side is not the price favorite, and you bought it at the ask when the count finished: per share, before fees (a winning share pays $1).
 
 ```sql
-SELECT FLOOR(hours_before_close / 24) AS days_out,
-       COUNT(DISTINCT condition_id)   AS markets,
-       AVG(headcount_correct)         AS headcount_acc,
-       AVG(shares_correct)            AS shares_acc,
-       AVG(price_correct)             AS price_acc
-FROM v_snapshot_vs_result
-WHERE winning_outcome_index IS NOT NULL AND is_complete = 1 AND outcome_count = 2
-GROUP BY days_out
-ORDER BY days_out;
-```
-
-When the most-held side is not the price favorite: if the crowd's pick wins more often than its average price, buying it would have paid. This version uses the midpoint, so it overstates what you could have made. The next query uses the ask.
-
-```sql
-SELECT COALESCE(sports_market_type, 'non-sports') AS kind,
-       COUNT(DISTINCT condition_id)               AS markets,
-       AVG(headcount_correct)                     AS crowd_win_rate,
-       AVG(headcount_pick_price)                  AS avg_price_of_crowd_pick
-FROM v_snapshot_vs_result
-WHERE crowd_disagrees_with_price = 1 AND winning_outcome_index IS NOT NULL AND is_complete = 1
+SELECT COALESCE(m.sports_market_type, 'non-sports')          AS kind,
+       COUNT(DISTINCT p.condition_id)                        AS markets,
+       COUNT(*)                                              AS entries,
+       AVG(p.head_pick = m.winning_outcome_index)            AS crowd_win_rate,
+       AVG(p.head_pick_ask)                                  AS avg_ask,
+       AVG((p.head_pick = m.winning_outcome_index) - p.head_pick_ask) AS return_per_share
+FROM snapshot_pick p
+         JOIN market m ON m.condition_id = p.condition_id
+WHERE m.winning_outcome_index IS NOT NULL
+  AND p.is_complete = 1
+  AND p.head_pick <> p.price_pick
+  AND p.head_pick_ask > 0
 GROUP BY kind
 ORDER BY markets DESC;
 ```
 
-The same, at a price you could actually have paid: the ask when the count finished. The return is per share, before fees; a winning share pays $1.
-
-```sql
-SELECT COALESCE(sports_market_type, 'non-sports')  AS kind,
-       COUNT(DISTINCT condition_id)                AS markets,
-       COUNT(*)                                    AS entries,
-       AVG(headcount_correct)                      AS crowd_win_rate,
-       AVG(headcount_pick_ask)                     AS avg_ask,
-       AVG(headcount_correct - headcount_pick_ask) AS return_per_share
-FROM v_snapshot_vs_result
-WHERE crowd_disagrees_with_price = 1 AND winning_outcome_index IS NOT NULL AND is_complete = 1
-  AND headcount_pick_ask > 0
-GROUP BY kind
-ORDER BY markets DESC;
-```
-
-Accuracy by tag (a market with several tags counts under each):
+Accuracy by tag, for tags with at least 20 resolved markets:
 
 ```sql
 SELECT t.tag,
-       COUNT(DISTINCT v.condition_id) AS markets,
-       AVG(v.headcount_correct)       AS headcount_acc,
-       AVG(v.price_correct)           AS price_acc
-FROM v_snapshot_vs_result v
-         JOIN market_tag t ON t.condition_id = v.condition_id
-WHERE v.winning_outcome_index IS NOT NULL AND v.is_complete = 1
+       COUNT(DISTINCT p.condition_id)              AS markets,
+       AVG(p.head_pick = m.winning_outcome_index)  AS headcount_acc,
+       AVG(p.price_pick = m.winning_outcome_index) AS price_acc
+FROM snapshot_pick p
+         JOIN market m ON m.condition_id = p.condition_id
+         JOIN market_tag t ON t.condition_id = p.condition_id
+WHERE m.winning_outcome_index IS NOT NULL
+  AND p.is_complete = 1
 GROUP BY t.tag
 HAVING markets >= 20
 ORDER BY markets DESC;
@@ -172,8 +178,8 @@ ORDER BY markets DESC;
 
 - `sql/migrations/001_market_tag.sql` adds `market_tag` and fills it from `market.tags`. It is safe to run more than once.
 - `sql/migrations/002_dashboard_cache.sql` adds `dashboard_cache`. Then run `php tasks/dashboard.php` once. Until you do, the homepage asks you to.
-- `sql/migrations/003_entry_prices.sql` adds `snapshot.completed_at` / `book_at` and the `snapshot_outcome.book_*` columns, and replaces `v_snapshot_vs_result`. Run it before deploying the new collector, because the collector writes those columns. Existing snapshots keep NULLs: their timing can't be recovered, so the tradable numbers start with the first run after the upgrade. Safe to run more than once.
-- `sql/migrations/004_snapshot_pick.sql` adds `snapshot_pick` and an index on `snapshot.captured_at`, without blocking the collector. Run it after 003. The next `php tasks/dashboard.php` back-fills the picks; run it by hand once so you can watch.
+- `sql/migrations/003_entry_prices.sql` adds `snapshot.completed_at` / `book_at` and the `snapshot_outcome.book_*` columns, Run it before deploying the new collector, because the collector writes those columns. Existing snapshots keep NULLs: their timing can't be recovered, so the tradable numbers start with the first run after the upgrade. Safe to run more than once.
+- `sql/migrations/004_snapshot_pick.sql` adds `snapshot_pick` and an index on `snapshot.captured_at`, without blocking the collector, and drops the old `v_snapshot_vs_result` view. Run it after 003. The next `php tasks/dashboard.php` back-fills the picks; run it by hand once so you can watch.
 
 ## If MySQL seems to hang
 

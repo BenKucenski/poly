@@ -4,8 +4,11 @@
 --  * snapshot_pick holds each snapshot's picks, computed once by
 --    tasks/dashboard.php; the first build after this backfills it in batches.
 --  * an index on snapshot.captured_at for the "last 24 hours" counts.
--- Both are added online (the collector can keep running). Safe to run more
--- than once. Needs migration 003 first.
+--  * drops the v_snapshot_vs_result view: reports are now SQL files under
+--    models/reports/sql read through QuickDRY's APIHelper, and the per-
+--    snapshot picks the view computed on every query live in snapshot_pick.
+-- The table and index are added online (the collector can keep running).
+-- Safe to run more than once. Needs migration 003 first.
 USE poly;
 
 -- One row per error-free snapshot with the picks worked out once: which
@@ -44,3 +47,5 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
+
+DROP VIEW IF EXISTS v_snapshot_vs_result;
