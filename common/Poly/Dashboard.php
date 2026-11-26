@@ -6,10 +6,10 @@ namespace common\Poly;
 /**
  * Read-only queries behind the homepage dashboard (pages/home).
  *
- * The accuracy numbers use the same picks as v_snapshot_vs_result (most
- * holders, most shares, highest price; a tie for first means no pick), but
- * only over resolved markets' complete, error-free snapshots, so they don't
- * pay for every open market's snapshots the way querying the view would.
+ * The accuracy, crowd, tag and forward-return numbers read snapshot_pick:
+ * each snapshot's picks (most holders, most shares, highest price; a tie for
+ * first means no pick), worked out once by Picks::Update() at the start of
+ * every build, so a build only does the new snapshots' share of that work.
  * Like the README's starter queries, rates are averaged over snapshots.
  *
  * Timing: a count's signal exists when the holder walk finished
@@ -61,6 +61,16 @@ class Dashboard
         $start = microtime(true);
         $built = 0;
         $failed = 0;
+
+        // Bring snapshot_pick up to date first; the aggregates read it.
+        try {
+            $p = Picks::Update($say);
+            $say(sprintf('picks          %d ms, %s new snapshots%s', $p['ms'], number_format($p['snapshots']),
+                $p['caught_up'] ? '' : ' (backfill continues next run)'));
+        } catch (\Throwable $e) {
+            $failed++;
+            $say('picks          FAILED: ' . mb_substr(get_class($e) . ': ' . $e->getMessage(), 0, 1000));
+        }
 
         foreach (self::Sections() as $name => $fn) {
             if ($only !== null && !in_array($name, $only, true)) {
@@ -247,73 +257,6 @@ GROUP BY band
     }
 
     /**
-     * Per-snapshot picks, as a SQL fragment shared by the accuracy and return
-     * queries. Complete, error-free snapshots only. Columns: snapshot_id,
-     * condition_id, outcome_count, signal_at, hours_before_close,
-     * winning_outcome_index (NULL until resolved), has_book, head_pick,
-     * head_pick_price (midpoint/price at the signal), head_pick_ask (what
-     * buying it cost then; NULL without a book), share_pick, price_pick.
-     * Each pick is NULL on a tie.
-     *
-     * @param bool $resolved_only only markets that settled with a winner
-     * @return string
-     */
-    private static function PicksSQL(bool $resolved_only = true): string
-    {
-        return '
-SELECT a.snapshot_id,
-       a.condition_id,
-       a.outcome_count,
-       a.signal_at,
-       a.hours_before_close,
-       a.winning_outcome_index,
-       a.has_book,
-       IF(a.head_ties = 1, a.head_pick, NULL)        AS head_pick,
-       IF(a.head_ties = 1, a.head_pick_price, NULL)  AS head_pick_price,
-       IF(a.head_ties = 1, a.head_pick_ask, NULL)    AS head_pick_ask,
-       IF(a.share_ties = 1, a.share_pick, NULL)      AS share_pick,
-       IF(a.price_ties = 1, a.price_pick, NULL)      AS price_pick
-FROM (SELECT r.snapshot_id,
-             r.condition_id,
-             r.outcome_count,
-             r.signal_at,
-             r.hours_before_close,
-             r.winning_outcome_index,
-             MAX(r.book_ask IS NOT NULL)                                    AS has_book,
-             SUM(r.holder_count = r.max_holders)                            AS head_ties,
-             MIN(IF(r.holder_count = r.max_holders, r.outcome_index, NULL)) AS head_pick,
-             MAX(IF(r.holder_count = r.max_holders, r.sig_price, NULL))     AS head_pick_price,
-             MAX(IF(r.holder_count = r.max_holders, r.book_ask, NULL))      AS head_pick_ask,
-             SUM(r.total_shares = r.max_shares)                             AS share_ties,
-             MIN(IF(r.total_shares = r.max_shares, r.outcome_index, NULL))  AS share_pick,
-             SUM(r.sig_price = r.max_price)                                 AS price_ties,
-             MIN(IF(r.sig_price = r.max_price, r.outcome_index, NULL))      AS price_pick
-      FROM (SELECT q.*,
-                   MAX(q.holder_count) OVER (PARTITION BY q.snapshot_id) AS max_holders,
-                   MAX(q.total_shares) OVER (PARTITION BY q.snapshot_id) AS max_shares,
-                   MAX(q.sig_price) OVER (PARTITION BY q.snapshot_id)    AS max_price
-            FROM (SELECT so.snapshot_id,
-                         s.condition_id,
-                         m.outcome_count,
-                         m.winning_outcome_index,
-                         COALESCE(s.completed_at, s.captured_at) AS signal_at,
-                         TIMESTAMPDIFF(MINUTE, COALESCE(s.completed_at, s.captured_at), COALESCE(m.closed_time, m.end_date)) / 60.0
-                                                                 AS hours_before_close,
-                         so.outcome_index,
-                         so.holder_count,
-                         so.total_shares,
-                         so.book_ask,
-                         COALESCE((so.book_bid + so.book_ask) / 2, so.price) AS sig_price
-                  FROM market m
-                           JOIN snapshot s ON s.condition_id = m.condition_id
-                           JOIN snapshot_outcome so ON so.snapshot_id = s.id
-                  WHERE ' . ($resolved_only ? 'm.winning_outcome_index IS NOT NULL AND ' : '') . 's.is_complete = 1
-                    AND s.error IS NULL) q) r
-      GROUP BY r.snapshot_id, r.condition_id, r.outcome_count, r.signal_at, r.hours_before_close, r.winning_outcome_index) a
-';
-    }
-
-    /**
      * How often each kind of majority picked the winner, by days before close
      * (binary markets, complete snapshots only).
      *
@@ -322,14 +265,18 @@ FROM (SELECT r.snapshot_id,
     public static function AccuracyByDaysOut(): array
     {
         return Store::Rows('
-SELECT LEAST(GREATEST(FLOOR(p.hours_before_close / 24), 0), ' . self::MAX_DAYS_OUT . ') AS days_out,
-       COUNT(DISTINCT p.condition_id)                       AS markets,
-       COUNT(*)                                             AS snapshots,
-       AVG(p.head_pick = p.winning_outcome_index)           AS headcount_acc,
-       AVG(p.share_pick = p.winning_outcome_index)          AS shares_acc,
-       AVG(p.price_pick = p.winning_outcome_index)          AS price_acc
-FROM (' . self::PicksSQL() . ') p
-WHERE p.outcome_count = 2
+SELECT LEAST(GREATEST(FLOOR(TIMESTAMPDIFF(MINUTE, p.signal_at, COALESCE(m.closed_time, m.end_date)) / 60.0 / 24), 0), ' . self::MAX_DAYS_OUT . ')
+                                                     AS days_out,
+       COUNT(DISTINCT p.condition_id)                AS markets,
+       COUNT(*)                                      AS snapshots,
+       AVG(p.head_pick = m.winning_outcome_index)    AS headcount_acc,
+       AVG(p.share_pick = m.winning_outcome_index)   AS shares_acc,
+       AVG(p.price_pick = m.winning_outcome_index)   AS price_acc
+FROM market m
+         JOIN snapshot_pick p ON p.condition_id = m.condition_id
+WHERE m.winning_outcome_index IS NOT NULL
+  AND m.outcome_count = 2
+  AND p.is_complete = 1
 GROUP BY days_out
 ORDER BY days_out
 ');
@@ -349,20 +296,23 @@ ORDER BY days_out
         return Store::Row('
 SELECT COUNT(DISTINCT p.condition_id)                                              AS markets,
        COUNT(*)                                                                    AS snapshots,
-       AVG(p.head_pick = p.winning_outcome_index)                                  AS headcount_acc,
-       AVG(p.share_pick = p.winning_outcome_index)                                 AS shares_acc,
-       AVG(p.price_pick = p.winning_outcome_index)                                 AS price_acc,
+       AVG(p.head_pick = m.winning_outcome_index)                                  AS headcount_acc,
+       AVG(p.share_pick = m.winning_outcome_index)                                 AS shares_acc,
+       AVG(p.price_pick = m.winning_outcome_index)                                 AS price_acc,
        COUNT(DISTINCT IF(p.head_pick <> p.price_pick, p.condition_id, NULL))       AS disagree_markets,
        SUM(p.head_pick <> p.price_pick)                                            AS disagree_snapshots,
-       AVG(IF(p.head_pick <> p.price_pick, p.head_pick = p.winning_outcome_index, NULL)) AS crowd_win_rate,
+       AVG(IF(p.head_pick <> p.price_pick, p.head_pick = m.winning_outcome_index, NULL)) AS crowd_win_rate,
        AVG(IF(p.head_pick <> p.price_pick, p.head_pick_price, NULL))               AS crowd_pick_price,
        SUM(p.head_pick <> p.price_pick AND p.head_pick_ask IS NOT NULL)            AS book_snapshots,
        COUNT(DISTINCT IF(p.head_pick <> p.price_pick AND p.head_pick_ask IS NOT NULL, p.condition_id, NULL))
                                                                                    AS book_markets,
        AVG(IF(p.head_pick <> p.price_pick AND p.head_pick_ask IS NOT NULL,
-              p.head_pick = p.winning_outcome_index, NULL))                        AS book_crowd_win_rate,
+              p.head_pick = m.winning_outcome_index, NULL))                        AS book_crowd_win_rate,
        AVG(IF(p.head_pick <> p.price_pick, p.head_pick_ask, NULL))                 AS crowd_pick_ask
-FROM (' . self::PicksSQL() . ') p
+FROM market m
+         JOIN snapshot_pick p ON p.condition_id = m.condition_id
+WHERE m.winning_outcome_index IS NOT NULL
+  AND p.is_complete = 1
 ') ?? [];
     }
 
@@ -382,25 +332,21 @@ SELECT IF(p.head_pick <> p.price_pick, 1, 0)                                    
        COUNT(*)                                                                      AS entries,
        COUNT(DISTINCT p.condition_id)                                                AS markets,
        AVG(p.head_pick_ask)                                                          AS entry_ask,
-       COUNT(n.book_bid)                                                             AS next_n,
-       AVG(IF(n.book_bid IS NULL, NULL,
-              TIMESTAMPDIFF(MINUTE, p.signal_at, COALESCE(ns.completed_at, ns.captured_at)) / 60.0))
+       COUNT(p.next_head_bid)                                                        AS next_n,
+       AVG(IF(p.next_head_bid IS NULL, NULL, TIMESTAMPDIFF(MINUTE, p.signal_at, p.next_signal_at) / 60.0))
                                                                                      AS next_hours,
-       AVG(n.book_bid - p.head_pick_ask)                                             AS next_return,
-       AVG(n.book_bid / p.head_pick_ask - 1)                                         AS next_roi,
-       AVG(IF(n.book_bid IS NULL, NULL, n.book_bid > p.head_pick_ask))               AS next_up_share,
-       COUNT(p.winning_outcome_index)                                                AS res_n,
-       AVG(IF(p.winning_outcome_index IS NULL, NULL, (p.head_pick = p.winning_outcome_index) - p.head_pick_ask))
+       AVG(p.next_head_bid - p.head_pick_ask)                                        AS next_return,
+       AVG(p.next_head_bid / p.head_pick_ask - 1)                                    AS next_roi,
+       AVG(IF(p.next_head_bid IS NULL, NULL, p.next_head_bid > p.head_pick_ask))     AS next_up_share,
+       COUNT(m.winning_outcome_index)                                                AS res_n,
+       AVG(IF(m.winning_outcome_index IS NULL, NULL, (p.head_pick = m.winning_outcome_index) - p.head_pick_ask))
                                                                                      AS res_return,
-       AVG(IF(p.winning_outcome_index IS NULL, NULL, (p.head_pick = p.winning_outcome_index) / p.head_pick_ask - 1))
+       AVG(IF(m.winning_outcome_index IS NULL, NULL, (p.head_pick = m.winning_outcome_index) / p.head_pick_ask - 1))
                                                                                      AS res_roi
-FROM (' . self::PicksSQL(false) . ') p
-         JOIN (SELECT id, LEAD(id) OVER (PARTITION BY condition_id ORDER BY captured_at) AS next_id
-               FROM snapshot
-               WHERE error IS NULL) nx ON nx.id = p.snapshot_id
-         LEFT JOIN snapshot ns ON ns.id = nx.next_id
-         LEFT JOIN snapshot_outcome n ON n.snapshot_id = nx.next_id AND n.outcome_index = p.head_pick
-WHERE p.head_pick IS NOT NULL
+FROM snapshot_pick p
+         JOIN market m ON m.condition_id = p.condition_id
+WHERE p.is_complete = 1
+  AND p.head_pick IS NOT NULL
   AND p.price_pick IS NOT NULL
   AND p.head_pick_ask > 0
 GROUP BY disagree WITH ROLLUP
@@ -435,10 +381,13 @@ LIMIT ' . max(1, $limit));
 
         $acc = Store::Rows('
 SELECT t.tag,
-       AVG(p.head_pick = p.winning_outcome_index)  AS headcount_acc,
-       AVG(p.price_pick = p.winning_outcome_index) AS price_acc
-FROM (' . self::PicksSQL() . ') p
-         JOIN market_tag t ON t.condition_id = p.condition_id
+       AVG(p.head_pick = m.winning_outcome_index)  AS headcount_acc,
+       AVG(p.price_pick = m.winning_outcome_index) AS price_acc
+FROM market m
+         JOIN snapshot_pick p ON p.condition_id = m.condition_id
+         JOIN market_tag t ON t.condition_id = m.condition_id
+WHERE m.winning_outcome_index IS NOT NULL
+  AND p.is_complete = 1
 GROUP BY t.tag
 ');
         $acc = array_column($acc, null, 'tag');

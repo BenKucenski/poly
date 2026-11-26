@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS snapshot
     error              VARCHAR(1000) NULL,
     PRIMARY KEY (id),
     KEY ix_snapshot_market (condition_id, captured_at),
+    KEY ix_snapshot_captured (captured_at),
     KEY ix_snapshot_run (run_id)
 ) ENGINE = InnoDB;
 
@@ -143,6 +144,35 @@ CREATE TABLE IF NOT EXISTS collector_state
     value      VARCHAR(1000) NULL,
     updated_at DATETIME      NOT NULL,
     PRIMARY KEY (name)
+) ENGINE = InnoDB;
+
+-- One row per error-free snapshot with the picks worked out once: which
+-- outcome had the most wallets, the most shares and the highest price (order-
+-- book midpoint when recorded), what buying the head-count pick cost, and the
+-- bid for that same outcome at the market's next count. Written incrementally
+-- by tasks/dashboard.php (it only reads the collector's tables, never locks
+-- them); the dashboard's aggregates read this instead of recomputing picks
+-- over all of snapshot_outcome. Safe to TRUNCATE: the next build refills it.
+CREATE TABLE IF NOT EXISTS snapshot_pick
+(
+    snapshot_id       BIGINT         NOT NULL,
+    condition_id      VARCHAR(66)    NOT NULL,
+    signal_at         DATETIME       NOT NULL COMMENT 'completed_at, or captured_at on snapshots from before it existed',
+    is_complete       TINYINT(1)     NOT NULL,
+    has_book          TINYINT(1)     NOT NULL DEFAULT 0,
+    all_holders       INT            NOT NULL DEFAULT 0,
+    head_pick         TINYINT        NULL COMMENT 'NULL on a tie',
+    head_pick_holders INT            NULL,
+    head_pick_price   DECIMAL(10, 6) NULL COMMENT 'midpoint (or Gamma price) of the head-count pick at signal_at',
+    head_pick_ask     DECIMAL(10, 6) NULL COMMENT 'what buying the head-count pick cost at signal_at',
+    share_pick        TINYINT        NULL,
+    price_pick        TINYINT        NULL,
+    price_pick_price  DECIMAL(10, 6) NULL,
+    next_snapshot_id  BIGINT         NULL COMMENT 'the market''s next error-free snapshot',
+    next_signal_at    DATETIME       NULL,
+    next_head_bid     DECIMAL(10, 6) NULL COMMENT 'bid for head_pick at the next snapshot',
+    PRIMARY KEY (snapshot_id),
+    KEY ix_pick_market (condition_id, snapshot_id)
 ) ENGINE = InnoDB;
 
 -- Precomputed dashboard sections, written by tasks/dashboard.php and read by
