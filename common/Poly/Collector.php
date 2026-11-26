@@ -510,6 +510,22 @@ LIMIT ' . self::BATCH . '
             $this->notes[] = $cid . ': ' . $error;
         }
 
+        // The head count is known now, not at $captured. Read the order books
+        // at this moment, so analysis can use a price you could actually have
+        // traded at once you had the signal. A failed read leaves them NULL;
+        // the count is still saved.
+        $completed = time();
+        $books = [];
+        $book_at = null;
+        if (!$error) {
+            try {
+                $books = $this->api->Books(array_map('strval', $tokens));
+                $book_at = time();
+            } catch (RuntimeException $e) {
+                $this->notes[] = $cid . ': order books: ' . substr($e->getMessage(), 0, 300);
+            }
+        }
+
         // Distinct wallets, and wallets holding more than one side.
         $seen = [];
         foreach ($holders as $wallets) {
@@ -520,14 +536,16 @@ LIMIT ' . self::BATCH . '
         $multi = count(array_filter($seen, fn($n) => $n > 1));
 
         $snapshot_id = (int)Store::Exec('
-INSERT INTO snapshot (run_id, condition_id, captured_at, seconds_to_end, is_complete, pages,
+INSERT INTO snapshot (run_id, condition_id, captured_at, completed_at, book_at, seconds_to_end, is_complete, pages,
     unique_holders, multi_side_holders, volume_num, liquidity_num, best_bid, best_ask, last_trade_price, spread, error)
-VALUES (:run_id, :condition_id, :captured_at, :seconds_to_end, :is_complete, :pages,
+VALUES (:run_id, :condition_id, :captured_at, :completed_at, :book_at, :seconds_to_end, :is_complete, :pages,
     :unique_holders, :multi_side_holders, :volume_num, :liquidity_num, :best_bid, :best_ask, :last_trade_price, :spread, :error)
 ', [
             'run_id'             => $this->run_id,
             'condition_id'       => $cid,
             'captured_at'        => Store::Time($captured),
+            'completed_at'       => Store::Time($completed),
+            'book_at'            => $book_at ? Store::Time($book_at) : null,
             'seconds_to_end'     => $end ? strtotime($end . ' UTC') - $captured : null,
             'is_complete'        => $complete ? 1 : 0,
             'pages'              => $pages,
@@ -543,7 +561,7 @@ VALUES (:run_id, :condition_id, :captured_at, :seconds_to_end, :is_complete, :pa
         ])->last_id;
 
         if (!$error) {
-            $this->SaveOutcomes($snapshot_id, $outcomes, $tokens, $prices, $holders);
+            $this->SaveOutcomes($snapshot_id, $outcomes, $tokens, $prices, $holders, $books);
         }
 
         // Refresh the market row and schedule the next count.
@@ -600,9 +618,10 @@ WHERE condition_id = :condition_id
      * @param array $tokens token ids
      * @param array $prices current prices
      * @param array $holders outcome_index => [wallet => shares]
+     * @param array $books token id => PolyAPI::BestLevels() result, read when the count finished
      * @return void
      */
-    private function SaveOutcomes(int $snapshot_id, array $outcomes, array $tokens, array $prices, array $holders): void
+    private function SaveOutcomes(int $snapshot_id, array $outcomes, array $tokens, array $prices, array $holders, array $books = []): void
     {
         $rows = [];
         $holder_rows = [];
@@ -611,6 +630,7 @@ WHERE condition_id = :condition_id
             $wallets = $holders[$i] ?? [];
             arsort($wallets);
             $shares = array_values($wallets);
+            $book = isset($tokens[$i]) ? ($books[(string)$tokens[$i]] ?? null) : null;
 
             $rows[] = [
                 'snapshot_id'       => $snapshot_id,
@@ -626,6 +646,10 @@ WHERE condition_id = :condition_id
                 'holders_ge_10000'  => count(array_filter($shares, fn($s) => $s >= 10000)),
                 'top10_shares'      => round(array_sum(array_slice($shares, 0, 10)), 6),
                 'max_holder_shares' => $shares[0] ?? 0,
+                'book_bid'          => $book['bid'] ?? null,
+                'book_ask'          => $book['ask'] ?? null,
+                'book_bid_size'     => isset($book['bid_size']) ? round($book['bid_size'], 6) : null,
+                'book_ask_size'     => isset($book['ask_size']) ? round($book['ask_size'], 6) : null,
             ];
 
             if ($this->store_holder_rows !== 0) {
