@@ -47,8 +47,10 @@ $chart_data = [
         </div>
     </div>
     <div class="text-body-secondary small text-end">
-        Page built <?php echo home::Time(gmdate('Y-m-d H:i:s')); ?>
-        · <a href="/" class="link-secondary">refresh</a>
+        <?php if (home::$HasCache) { ?>
+            Numbers as of <?php echo home::Time(home::$BuiltAt, true); ?>
+            <div>computed by <code>tasks/dashboard.php</code> in <?php echo home::Num(home::$BuildMs / 1000, 1); ?> s</div>
+        <?php } ?>
     </div>
 </header>
 
@@ -58,6 +60,11 @@ $chart_data = [
         Check the MySQL settings in <code>env.php</code> and that <code>sql/schema.sql</code> has been run.
         <pre class="mb-0 mt-2 small text-wrap"><?php echo home::H(home::$DBError); ?></pre>
     </div>
+<?php } elseif (!home::$HasCache) { ?>
+    <div class="alert alert-info" role="alert">
+        The dashboard hasn't been computed yet. Run <code>php tasks/dashboard.php</code>, then schedule it
+        every 15 minutes or so (see the README).
+    </div>
 <?php } elseif (!$has_data) { ?>
     <div class="alert alert-info" role="alert">
         The database is reachable but empty. Run <code>php tasks/collect.php -m300</code> for a short first collection,
@@ -65,7 +72,18 @@ $chart_data = [
     </div>
 <?php } ?>
 
-<?php if (!home::$DBError) { ?>
+<?php if (home::$StaleSections) { ?>
+    <div class="alert alert-warning small" role="alert">
+        <strong>Some sections failed to rebuild</strong> and still show their previous numbers:
+        <ul class="mb-0 mt-1">
+            <?php foreach (home::$StaleSections as $name => $error) { ?>
+                <li><code><?php echo home::H($name); ?></code>: <?php echo home::H($error); ?></li>
+            <?php } ?>
+        </ul>
+    </div>
+<?php } ?>
+
+<?php if (!home::$DBError && home::$HasCache) { ?>
 
 <!-- Headline numbers -->
 <section class="row g-3 mb-4" aria-label="Headline numbers">

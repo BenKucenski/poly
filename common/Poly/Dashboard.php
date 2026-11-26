@@ -18,6 +18,101 @@ class Dashboard
     public const int MAX_DAYS_OUT = 30;
 
     /**
+     * The sections tasks/dashboard.php computes and the homepage reads, in
+     * build order. Each one is stored as its own dashboard_cache row.
+     *
+     * @return array<string, callable>
+     */
+    public static function Sections(): array
+    {
+        return [
+            'totals'        => static fn() => self::Totals(),
+            'runs'          => static fn() => self::Runs(72),
+            'cadence'       => static fn() => self::Cadence(),
+            'accuracy'      => static fn() => self::AccuracyByDaysOut(),
+            'crowd'         => static fn() => self::CrowdVsPrice(),
+            'tags'          => static fn() => self::Tags(20),
+            'closing_soon'  => static fn() => self::ClosingSoon(12),
+            'resolved'      => static fn() => self::RecentlyResolved(12),
+            'tables'        => static fn() => self::TableSizes(),
+        ];
+    }
+
+    /**
+     * Computes every section and saves it to dashboard_cache. A section that
+     * fails keeps its last good data and records the error, so one bad query
+     * doesn't blank the whole page.
+     *
+     * @param string[]|null $only section names to rebuild (null = all)
+     * @param callable|null $say progress output, e.g. fn(string $msg) => print($msg)
+     * @return array{built: int, failed: int, ms: int}
+     */
+    public static function Build(?array $only = null, ?callable $say = null): array
+    {
+        $say ??= static fn(string $msg) => null;
+        $start = microtime(true);
+        $built = 0;
+        $failed = 0;
+
+        foreach (self::Sections() as $name => $fn) {
+            if ($only !== null && !in_array($name, $only, true)) {
+                continue;
+            }
+
+            $t = microtime(true);
+            try {
+                $json = json_encode($fn(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+                $ms = (int)round((microtime(true) - $t) * 1000);
+                Store::Exec('
+INSERT INTO dashboard_cache (name, data, built_at, build_ms, error, tried_at)
+VALUES (:name, :data, :built_at, :build_ms, NULL, :tried_at)
+ON DUPLICATE KEY UPDATE data = VALUES(data), built_at = VALUES(built_at), build_ms = VALUES(build_ms),
+                        error = NULL, tried_at = VALUES(tried_at)
+', ['name' => $name, 'data' => $json, 'built_at' => Store::Time(), 'build_ms' => $ms, 'tried_at' => Store::Time()]);
+                $built++;
+                $say(str_pad($name, 14) . ' ' . $ms . ' ms, ' . number_format(strlen($json)) . ' bytes');
+            } catch (\Throwable $e) {
+                $failed++;
+                $error = mb_substr(get_class($e) . ': ' . $e->getMessage(), 0, 1000);
+                $say(str_pad($name, 14) . ' FAILED: ' . $error);
+                try {
+                    // Keep the last good data; just record the failure.
+                    Store::Exec('
+INSERT INTO dashboard_cache (name, data, built_at, build_ms, error, tried_at)
+VALUES (:name, NULL, NULL, 0, :error, :tried_at)
+ON DUPLICATE KEY UPDATE error = VALUES(error), tried_at = VALUES(tried_at)
+', ['name' => $name, 'error' => $error, 'tried_at' => Store::Time()]);
+                } catch (\Throwable) {
+                    // the database itself is gone; nothing more to record
+                }
+            }
+        }
+
+        return ['built' => $built, 'failed' => $failed, 'ms' => (int)round((microtime(true) - $start) * 1000)];
+    }
+
+    /**
+     * Reads every stored section. Runs one primary-key scan of a small table;
+     * none of the heavy queries.
+     *
+     * @return array<string, array{data: mixed, built_at: ?string, build_ms: int, error: ?string, tried_at: ?string}>
+     */
+    public static function Load(): array
+    {
+        $out = [];
+        foreach (Store::Rows('SELECT name, data, built_at, build_ms, error, tried_at FROM dashboard_cache') as $row) {
+            $out[$row['name']] = [
+                'data'     => $row['data'] === null ? null : json_decode($row['data'], true),
+                'built_at' => $row['built_at'],
+                'build_ms' => (int)$row['build_ms'],
+                'error'    => $row['error'],
+                'tried_at' => $row['tried_at'],
+            ];
+        }
+        return $out;
+    }
+
+    /**
      * Tries the MySQL settings from env.php before QuickDRY connects, because
      * QuickDRY's connector die()s with a debug dump on a failed connect. A web
      * page should say "can't connect" instead.
